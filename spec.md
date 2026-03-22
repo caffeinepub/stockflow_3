@@ -1,38 +1,78 @@
 # StockFlow
 
 ## Current State
-StockFlow is a client-side React SPA for Indian logistics inventory management. It has Transit Ledger, Arrival Queue, Inward Processing, Transfers, History Log, Dashboard, and Admin Settings tabs. Role-based access for admin, staff, supplier.
+
+StockFlow is a fully client-side React single-page application (SPA) for Indian logistics inventory management. The entire app is in `src/frontend/src/App.tsx` (~5800 lines). There is no backend persistence — all data lives in React state (with manual JSON export/import for backups).
+
+### Architecture
+- **Framework:** React with functional components and hooks only
+- **UI:** Tailwind CSS + shadcn/ui components + lucide-react icons
+- **State:** useState/useEffect only, no external state management
+- **Storage:** In-memory React state; manual JSON backup/restore
+- **AI:** Google Gemini API (user-provided key, stored in localStorage)
+- **Auth:** Local username/password with roles: admin, staff, supplier
+
+### Tabs (navigation)
+1. **Dashboard (Inventory Hub)** — per-godown stock, threshold alerts (red for items at/below threshold with category/sub-categories/godown qty), item click opens timeline history
+2. **Transit Ledger** — bilty entries with duplicate prevention, item category dropdown, Track Live button (if transport has URL configured), admin can rename columns/edit preset data, CSV import
+3. **Arrival Queue** — bilty queue with auto-fill from Transit on bilty match, supplier/item category/item name fields, filters (date, name, category/item), Track button, Open Bale → switches to Inward tab with data pre-filled; saving bilty in Queue removes it from Transit
+4. **Inward Processing** — bilty combo search (pulls from Queue + Transit), auto-fill all fields, Total Goods Qty field with distribution sum validation, item name combo box (dropdown+text, filtered by category, new items auto-saved to inventory), auto-fills sell/purchase price (overwritable), staff cannot see/add purchase price, no duplicate bilty allowed, saving removes bilty from both Transit and Queue
+5. **Opening Stock** (admin only) — enter legacy/pre-app stock, item/category dropdown combo box, sell+purchase price fields
+6. **Transfers** — product search showing item name, sub-categories, per-godown stock; transfer between godowns/shop; New Transfer refresh button; history recorded with person + date
+7. **History Log** — all transactions (inward, transfers), shows bilty numbers, expandable detail view, date range + category/item filters, admin can edit all fields of inward entries (opens full inward form, bilty locked, rest editable, saves as overwrite)
+8. **Admin Settings** — sub-tabs: Godowns (add/rename/delete), Transport Tracking (name→URL mapping), Tab Names (rename all 7 tabs), Transit Columns (rename headings + edit preset field data), Categories (add/edit/remove), Users (add/edit/remove), Bilty Prefixes, AI Settings (Gemini API key input)
+9. **Stock Control** (admin only) — direct stock overwrite, global/per-item thresholds (applied to godown stock only, not shop)
+10. **Sales Tab** — select multiple items/categories to record sales and reduce shop stock
+
+### Key Data Types
+- `InventoryItem`: sku, category, itemName, attributes (sub-categories), shop (qty), godowns (Record<godownName, qty>), saleRate, purchaseRate, businessId, minThreshold
+- `TransitRecord`: id, biltyNo, transportName, supplierName, itemName, itemCategory, packages, date, addedBy, businessId, customData
+- `PendingParcel` (Queue): id, biltyNo, transportName, packages, dateReceived, arrivalDate, businessId, itemName, category, itemCategory, supplier, customData
+- `InwardRecord`: id, biltyNo, dateOpened, openedBy, transport, baleItems[], businessId, createdAt
+- `Transaction`: id, type, biltyNo, businessId, date, user, transportName, itemsCount, sku, itemName, category, notes, fromLocation, toLocation, transferredBy, subCategory
+- `AppUser`: username, password, role (admin/staff/supplier)
+- `Business`: id, name
+- `Category`: name, fields[] (CategoryField with name, type, options)
+
+### Role Restrictions
+- **supplier**: only sees own Transit entries; no access to Dashboard, Queue, Inward, Transfer, History, Settings
+- **staff**: view-only in Transit (no add); no purchase price in Inward; no Opening Stock; no Admin Settings; no Stock Control
+- **admin**: full access to all tabs and features
+
+### Defaults
+- Users: admin/password, staff/password, supplier/password
+- Business: `{ id: 'default', name: 'StockManager Default' }`
+- Categories: Safi, Lungi, Napkin
+- Godowns: Main Godown, Side Godown
+- Bilty Prefixes: sola, erob, cheb, 0
+
+### AI Integration
+- Gemini API: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=...`
+- Used for: inventory insights, transaction audit, text-to-JSON extraction in Inward tab
+- Key stored in localStorage, configurable in Admin Settings > AI Settings
+- Graceful fallback messages if key missing
+
+### Multi-Business
+- Profile system with isolated data per business
+- Create, edit, delete, switch businesses
+
+---
 
 ## Requested Changes (Diff)
 
 ### Add
-- Duplicate bilty prevention in Transit tab (all roles blocked from adding same bilty twice within Transit)
-- Duplicate bilty prevention in Queue tab (no duplicate within Queue; same bilty as in Transit is allowed since that is the workflow)
-- Auto-fill Queue tab fields (transport, supplier, item category, item name) from Transit when matching bilty number is typed
-- History tab: expandable rows showing full entry details — bilty number, item name, category, sub-categories, godown distribution, transferred by, date
-- Gemini API key input field in Admin Settings with localStorage persistence; pass key to callGemini
-- Per-godown stock breakdown on the selected item in Transfer tab
-- Critical stock alert in Dashboard: show category, sub-categories, godown threshold, godown qty remaining per item (red highlight on table rows below threshold)
+- (none — this is a summary reinitiation, no new features requested)
 
 ### Modify
-- Inward Processing bilty search/dropdown: pull matching entries from BOTH Queue and Transit (currently Queue only)
-- Item Name field in Inward Processing: convert to combo box (searchable dropdown + free-text for new items); new item names auto-saved to inventory item list
-- History tab: admin can edit all fields of any inward stock entry (bilty, item, qty, dates, transport, etc.)
-- Bilty number input (postfix): restrict to numeric characters only across Transit, Queue, and Inward tabs
-- Dashboard critical alert: show godown-only qty, category, sub-heads; highlight table rows red when below threshold
+- (none)
 
 ### Remove
-- Nothing removed
+- (none)
+
+---
 
 ## Implementation Plan
-1. Add numeric-only validation/input filter on bilty number suffix fields in TransitTab, WarehouseTab, InwardTab
-2. Add duplicate bilty check in TransitTab handleAdd — block if same bilty already exists in transitGoods for this business
-3. Fix WarehouseTab duplicate check — only block duplicates within pendingParcels (not against transitGoods), so same bilty can exist in both Transit and Queue
-4. Add bilty onChange handler in WarehouseTab that looks up matching Transit entry and auto-fills transport, supplier, itemCategory, itemName fields
-5. Extend InwardTab Queue dropdown to also list Transit entries (merged list, labeled by source), auto-fill all matching fields on selection
-6. Convert Item Name in InwardTab to combo box: show filtered dropdown from inventory, allow typing new name, on save if new name add to inventory
-7. Add no-duplicate-bilty check in InwardTab handleFinalSave — block if bilty already processed in transactions
-8. Add Gemini API key input in Admin Settings (stored in localStorage), wire to callGemini function
-9. Transfer tab: after item selected, show per-godown stock breakdown (each godown name + qty)
-10. Dashboard: highlight inventory table rows red when below threshold; expand critical alert to show category, sub-categories, godown threshold, godown qty per item
-11. History tab: add expand/collapse per row showing full transaction details (bilty, item, category, godown breakdown, transferred by); add admin edit modal for inward entries
+
+This spec.md is a fresh summary reinitiation. No code changes are planned at this time. The current codebase reflects all previously implemented features as described in the Current State section above.
+
+Next development iteration should reference this spec as the authoritative baseline.

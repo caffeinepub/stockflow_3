@@ -9,20 +9,18 @@ import {
   Download,
   Edit,
   History,
-  Key,
   LayoutDashboard,
-  Loader2,
   LogOut,
   Navigation,
   Package,
   PackagePlus,
   Pencil,
   PlusCircle,
+  RefreshCw,
   Search,
   Settings,
   Share2,
-  Shield,
-  Sparkles,
+  ShoppingCart,
   Trash2,
   Upload,
   User,
@@ -186,34 +184,6 @@ const getTotalGodownStock = (item: InventoryItem) => {
   return Object.values(item.godowns).reduce((a, b) => a + Number(b || 0), 0);
 };
 
-const callGemini = async (prompt: string, isJson = false): Promise<unknown> => {
-  const apiKey = localStorage.getItem("geminiApiKey") || "";
-  if (!apiKey)
-    return isJson
-      ? {}
-      : "AI API Key missing. Please provide a valid Gemini API Key.";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-  const payload: Record<string, unknown> = {
-    contents: [{ parts: [{ text: prompt }] }],
-  };
-  if (isJson)
-    payload.generationConfig = { responseMimeType: "application/json" };
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error("API Error");
-    const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    return isJson ? JSON.parse(text) : text;
-  } catch (err) {
-    console.error(err);
-    return isJson ? {} : "AI Request Failed.";
-  }
-};
-
 /* ================= SHARED COMPONENTS ================= */
 function BiltyInput({
   prefixOptions,
@@ -318,17 +288,16 @@ function DashboardTab({
   inventory,
   minStockThreshold,
   activeBusinessId,
-  // biome-ignore lint/correctness/noUnusedVariables: used in shareWhatsApp
-  transactions,
+  transactions: _transactions,
+  onItemClick,
 }: {
   inventory: Record<string, InventoryItem>;
   minStockThreshold: number;
   activeBusinessId: string;
   transactions: Transaction[];
+  onItemClick?: (sku: string) => void;
 }) {
   const [searchTerm, setSearchTerm] = useState("");
-  const [aiInsight, setAiInsight] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const skus = Object.keys(inventory || {});
   const filteredSkus = skus.filter((sku) => {
@@ -359,16 +328,6 @@ function DashboardTab({
     return getTotalGodownStock(item) < threshold;
   });
 
-  const handleGetInsights = async () => {
-    setIsAnalyzing(true);
-    const res = await callGemini(
-      `Analyze this inventory data briefly and give 2 business insights: ${JSON.stringify(inventory)}`,
-      false,
-    );
-    setAiInsight(String(res));
-    setIsAnalyzing(false);
-  };
-
   const shareWhatsApp = (item: InventoryItem) => {
     const text = `*Stock Update: ${item.category} - ${item.itemName}*\nShop: ${item.shop}\nGodown: ${getTotalGodownStock(item)}\nRate: ₹${item.saleRate}`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
@@ -391,38 +350,8 @@ function DashboardTab({
               className="w-full pl-10 pr-4 py-3 border rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 bg-white shadow-sm font-bold text-sm"
             />
           </div>
-          <button
-            type="button"
-            onClick={handleGetInsights}
-            disabled={isAnalyzing}
-            className="bg-indigo-600 p-3 rounded-2xl text-white hover:bg-indigo-700 transition-all shadow-md"
-          >
-            {isAnalyzing ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <Sparkles className="w-5 h-5" />
-            )}
-          </button>
         </div>
       </div>
-
-      {aiInsight && (
-        <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-2xl shadow-sm relative animate-fade-in-down">
-          <button
-            type="button"
-            onClick={() => setAiInsight(null)}
-            className="absolute top-3 right-3 text-indigo-400 hover:text-indigo-600"
-          >
-            <X className="w-4 h-4" />
-          </button>
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-800 mb-1">
-            AI Insights
-          </h3>
-          <p className="text-xs text-indigo-900 leading-relaxed font-bold">
-            {aiInsight}
-          </p>
-        </div>
-      )}
 
       {lowStock.length > 0 && !searchTerm && (
         <div className="bg-red-50 border-2 border-red-200 p-5 rounded-3xl">
@@ -535,7 +464,12 @@ function DashboardTab({
                       return (
                         <tr
                           key={item.sku}
-                          className={`transition-colors ${isCritical ? "bg-red-50 hover:bg-red-100/60" : "hover:bg-blue-50/30"}`}
+                          onClick={() => onItemClick?.(item.sku)}
+                          onKeyUp={(e) =>
+                            e.key === "Enter" && onItemClick?.(item.sku)
+                          }
+                          tabIndex={0}
+                          className={`transition-colors cursor-pointer ${isCritical ? "bg-red-50 hover:bg-red-100/60" : "hover:bg-blue-50/30"}`}
                         >
                           <td className="px-6 py-4">
                             <div className="font-bold text-gray-900">
@@ -770,15 +704,19 @@ function TransitTab({
               >
                 <Download size={14} /> Template
               </button>
-              <p className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer hover:bg-indigo-100 transition-colors">
+              <label
+                htmlFor="transit-csv-upload"
+                className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer hover:bg-indigo-100 transition-colors"
+              >
                 <Upload size={14} /> Import CSV
-                <input
-                  type="file"
-                  accept=".csv"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                />
-              </p>
+              </label>
+              <input
+                id="transit-csv-upload"
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleFileUpload}
+              />
             </>
           )}
           {currentUser.role !== "staff" && (
@@ -1059,10 +997,11 @@ function WarehouseTab({
   setConfirmDialog,
   activeBusinessId,
   transportTracking,
-  allBiltyNos,
   existingQueueBiltyNos,
   transitGoods,
+  setTransitGoods,
   categories,
+  inventory,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -1076,10 +1015,11 @@ function WarehouseTab({
   ) => void;
   activeBusinessId: string;
   transportTracking?: Record<string, string>;
-  allBiltyNos?: string[];
   existingQueueBiltyNos?: string[];
   transitGoods?: TransitRecord[];
+  setTransitGoods?: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
   categories?: Category[];
+  inventory?: Record<string, InventoryItem>;
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1131,7 +1071,7 @@ function WarehouseTab({
     if (!biltyNumber) return showNotification("Bilty number required", "error");
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
-    const queueBiltyList = existingQueueBiltyNos ?? allBiltyNos ?? [];
+    const queueBiltyList = existingQueueBiltyNos ?? [];
     if (queueBiltyList.some((b) => b.toLowerCase() === bNo.toLowerCase())) {
       return showNotification(`Bilty ${bNo} already exists in Queue!`, "error");
     }
@@ -1144,6 +1084,12 @@ function WarehouseTab({
       },
       ...prev,
     ]);
+    // Remove matching bilty from transit
+    if (setTransitGoods) {
+      setTransitGoods((prev) =>
+        prev.filter((g) => g.biltyNo?.toLowerCase() !== bNo.toLowerCase()),
+      );
+    }
     setBiltyNumber("");
     setForm({
       transportName: "",
@@ -1245,14 +1191,12 @@ function WarehouseTab({
             </select>
           </div>
           <div>
-            <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-              Item Name
-            </p>
-            <input
-              type="text"
+            <ItemNameCombo
+              category={form.itemCategory}
               value={form.itemName}
-              onChange={(e) => setForm({ ...form, itemName: e.target.value })}
-              className="w-full border rounded-xl p-2.5 outline-none font-bold bg-gray-50 focus:bg-white"
+              onChange={(val) => setForm({ ...form, itemName: val })}
+              inventory={inventory || {}}
+              activeBusinessId={activeBusinessId}
             />
           </div>
           <div>
@@ -1554,80 +1498,6 @@ function ItemNameCombo({
   );
 }
 
-/* ================= AI SETTINGS PANEL ================= */
-function AISettingsPanel() {
-  const [apiKey, setApiKey] = useState(
-    () => localStorage.getItem("geminiApiKey") || "",
-  );
-  const [showKey, setShowKey] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const handleSave = () => {
-    localStorage.setItem("geminiApiKey", apiKey.trim());
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  return (
-    <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-lg">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="bg-indigo-100 text-indigo-600 p-3 rounded-2xl">
-          <Key size={20} />
-        </div>
-        <div>
-          <h4 className="font-black text-sm uppercase tracking-widest text-gray-800">
-            AI / Gemini Settings
-          </h4>
-          <p className="text-[10px] text-gray-400 font-bold mt-0.5">
-            Enter your Google Gemini API key to enable AI features.
-          </p>
-        </div>
-      </div>
-      <div className="space-y-4">
-        <div>
-          <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
-            Gemini API Key
-          </p>
-          <div className="flex gap-2">
-            <input
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="AIza..."
-              className="flex-1 border rounded-2xl p-4 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => setShowKey((v) => !v)}
-              className="bg-gray-100 hover:bg-gray-200 px-4 rounded-2xl font-bold text-xs text-gray-600 transition-colors"
-            >
-              {showKey ? "Hide" : "Show"}
-            </button>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={handleSave}
-          className={`w-full font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-lg transition-colors ${saved ? "bg-green-600 text-white" : "bg-indigo-600 text-white hover:bg-indigo-700"}`}
-        >
-          {saved ? "Saved!" : "Save API Key"}
-        </button>
-        <p className="text-[10px] text-gray-400 font-bold text-center">
-          Get a free API key at{" "}
-          <a
-            href="https://aistudio.google.com/app/apikey"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-indigo-600 underline"
-          >
-            aistudio.google.com
-          </a>
-        </p>
-      </div>
-    </div>
-  );
-}
-
 /* ================= INWARD TAB ================= */
 function InwardTab({
   inventory,
@@ -1697,8 +1567,6 @@ function InwardTab({
     purchaseRate: "",
     customData: {} as Record<string, string>,
   });
-  const [rawMessage, setRawMessage] = useState("");
-  const [isExtracting, setIsExtracting] = useState(false);
   const [matchedDetails, setMatchedDetails] = useState<
     TransitRecord | PendingParcel | null
   >(null);
@@ -1737,6 +1605,38 @@ function InwardTab({
       setMatchedDetails(null);
     }
   };
+
+  // Auto-fill when Open Bale is clicked in Queue
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only run on openingParcel change
+  useEffect(() => {
+    if (!openingParcel) return;
+    const biltyStr = openingParcel.biltyNo || "";
+    const dashIdx = biltyStr.lastIndexOf("-");
+    if (dashIdx > 0) {
+      const prefix = biltyStr.slice(0, dashIdx);
+      const num = biltyStr.slice(dashIdx + 1);
+      if (biltyPrefixes.includes(prefix)) {
+        setBiltyPrefix(prefix);
+        setBiltyNumber(num);
+      } else {
+        setBiltyPrefix("0");
+        setBiltyNumber(biltyStr);
+      }
+    } else {
+      setBiltyPrefix("0");
+      setBiltyNumber(biltyStr);
+    }
+    setMatchedDetails(openingParcel as unknown as PendingParcel);
+    setItemForm((prev) => ({
+      ...prev,
+      itemName: (openingParcel as PendingParcel).itemName || prev.itemName,
+      category:
+        (openingParcel as PendingParcel).itemCategory ||
+        (openingParcel as PendingParcel).category ||
+        prev.category,
+    }));
+    setQueueBiltySearch(biltyStr);
+  }, [openingParcel]);
 
   useEffect(() => {
     if (!itemForm.itemName) return;
@@ -1914,43 +1814,6 @@ function InwardTab({
     });
   };
 
-  const extractAI = async () => {
-    setIsExtracting(true);
-    const data = (await callGemini(
-      `Extract item info from this text into JSON format matching: { "items": [ { "itemName": "str", "category": "str", "shopQty": num, "saleRate": num } ] }. Text: ${rawMessage}`,
-      true,
-    )) as {
-      items?: {
-        itemName?: string;
-        category?: string;
-        shopQty?: number;
-        saleRate?: number;
-      }[];
-    };
-    if (data?.items) {
-      const mapped: BaleItem[] = data.items.map((i, idx) => ({
-        ...itemForm,
-        itemName: i.itemName || "",
-        category: i.category || "",
-        shopQty: String(i.shopQty || 0),
-        saleRate: String(i.saleRate || ""),
-        id: Date.now() + idx,
-        sku: generateSku(
-          i.category || "",
-          i.itemName || "",
-          {},
-          String(i.saleRate || 0),
-          activeBusinessId,
-        ),
-      }));
-      setBaleItems((prev) => [...prev, ...mapped]);
-      showNotification("AI Extraction Complete!");
-    } else {
-      showNotification("AI couldn't extract data.", "error");
-    }
-    setIsExtracting(false);
-  };
-
   const selectedCat = categories.find((c) => c.name === itemForm.category);
   const showItemForm = biltyNumber.length > 0 || openingParcel || isDirectEntry;
 
@@ -1959,31 +1822,6 @@ function InwardTab({
       <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase flex items-center gap-2 border-b pb-4">
         <PlusCircle className="text-green-600" /> Process Inward
       </h2>
-
-      {!openingParcel && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-3xl p-5 shadow-sm text-sm">
-          <p className="block font-black text-indigo-900 mb-2 uppercase tracking-widest text-[10px]">
-            <Sparkles className="w-4 h-4 inline mr-1" /> AI Auto-Fill via Text
-            Message
-          </p>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <textarea
-              value={rawMessage}
-              onChange={(e) => setRawMessage(e.target.value)}
-              placeholder="Paste WhatsApp message from supplier..."
-              className="w-full border border-indigo-100 rounded-2xl p-4 bg-white outline-none focus:ring-2 focus:ring-indigo-400 resize-none h-14"
-            />
-            <button
-              type="button"
-              onClick={extractAI}
-              disabled={isExtracting}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white font-black px-6 py-3 rounded-2xl shadow-md transition-colors uppercase text-[10px] tracking-widest"
-            >
-              {isExtracting ? "Parsing..." : "Extract"}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Queue Bilty Dropdown */}
       {!isDirectEntry && (
@@ -2573,6 +2411,7 @@ function TransferTab({
   const [search, setSearch] = useState("");
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
   const [qty, setQty] = useState("");
+  const [transferDone, setTransferDone] = useState(false);
 
   const filteredSkus = Object.keys(inventory || {})
     .filter((s) => {
@@ -2635,6 +2474,7 @@ function TransferTab({
     setQty("");
     setSelectedSku(null);
     setSearch("");
+    setTransferDone(true);
   };
 
   return (
@@ -2806,6 +2646,27 @@ function TransferTab({
           </div>
         )}
       </div>
+      {transferDone && (
+        <div className="bg-green-50 border border-green-200 rounded-3xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 animate-fade-in-down">
+          <div className="flex items-center gap-3">
+            <span className="text-green-600 font-black text-sm">
+              ✓ Transfer completed successfully!
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setTransferDone(false);
+              setSearch("");
+              setSelectedSku(null);
+              setQty("");
+            }}
+            className="flex items-center gap-2 bg-purple-600 text-white font-black px-6 py-3 rounded-2xl text-xs uppercase tracking-widest shadow-md"
+          >
+            <RefreshCw size={14} /> Transfer Another Item
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2817,6 +2678,7 @@ function HistoryTab({
   setTransactions,
   activeBusinessId,
   currentUser,
+  inventory,
 }: {
   transactions: Transaction[];
   setConfirmDialog: (
@@ -2825,10 +2687,9 @@ function HistoryTab({
   setTransactions: React.Dispatch<React.SetStateAction<Transaction[]>>;
   activeBusinessId: string;
   currentUser: AppUser;
+  inventory: Record<string, InventoryItem>;
 }) {
   const [search, setSearch] = useState("");
-  const [auditReport, setAuditReport] = useState<string | null>(null);
-  const [isAuditing, setIsAuditing] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
@@ -2872,15 +2733,6 @@ function HistoryTab({
     });
   };
 
-  const runAIAuditor = async () => {
-    setIsAuditing(true);
-    const res = await callGemini(
-      `Audit these last few transactions for anomalies or supply chain notes: ${JSON.stringify(transactions.slice(0, 10))}`,
-    );
-    setAuditReport(String(res));
-    setIsAuditing(false);
-  };
-
   return (
     <div className="space-y-6 animate-fade-in-down">
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b pb-4">
@@ -2888,19 +2740,6 @@ function HistoryTab({
           <History className="w-6 h-6 text-blue-600" /> Tracking Log
         </h2>
         <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-          <button
-            type="button"
-            onClick={runAIAuditor}
-            disabled={isAuditing}
-            className="bg-purple-100 text-purple-800 hover:bg-purple-200 px-4 py-2.5 rounded-2xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 transition-colors"
-          >
-            {isAuditing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Shield className="w-4 h-4" />
-            )}{" "}
-            AI Auditor
-          </button>
           <div className="relative w-full sm:w-72">
             <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -2948,23 +2787,6 @@ function HistoryTab({
           </button>
         )}
       </div>
-      {auditReport && (
-        <div className="bg-purple-50 border border-purple-200 p-5 rounded-3xl shadow-sm relative animate-fade-in-down">
-          <button
-            type="button"
-            onClick={() => setAuditReport(null)}
-            className="absolute top-4 right-4 text-purple-400 hover:text-purple-600"
-          >
-            <X size={18} />
-          </button>
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-purple-800 mb-2">
-            Audit Report
-          </h3>
-          <p className="text-sm text-purple-900 leading-relaxed font-bold">
-            {auditReport}
-          </p>
-        </div>
-      )}
       <div className="space-y-4">
         {filtered.length === 0 ? (
           <div className="text-center py-20 bg-white border border-dashed rounded-[3rem]">
@@ -3205,7 +3027,6 @@ function HistoryTab({
               {(
                 [
                   { label: "Bilty No", key: "biltyNo" },
-                  { label: "Item Name", key: "itemName" },
                   { label: "Category", key: "category" },
                   { label: "Transport", key: "transportName" },
                   { label: "Opened By / User", key: "user" },
@@ -3233,6 +3054,17 @@ function HistoryTab({
                   />
                 </div>
               ))}
+              <div>
+                <ItemNameCombo
+                  category={editingTx.category || ""}
+                  value={editingTx.itemName || ""}
+                  onChange={(val) =>
+                    setEditingTx({ ...editingTx, itemName: val } as Transaction)
+                  }
+                  inventory={inventory}
+                  activeBusinessId={activeBusinessId}
+                />
+              </div>
               <div>
                 <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
                   Qty Count
@@ -3681,6 +3513,136 @@ function OpeningStockTab({
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-3 mb-4">
+        <button
+          type="button"
+          onClick={() => {
+            const headers = [
+              "Category",
+              "ItemName",
+              "RefNote",
+              "Date",
+              "ShopQty",
+              "SaleRate",
+              "PurchaseRate",
+              ...godowns,
+            ];
+            const sample = [
+              categories[0]?.name || "Safi",
+              "Sample Item",
+              "Opening Balance",
+              new Date().toISOString().split("T")[0],
+              "10",
+              "100",
+              "80",
+              ...godowns.map(() => "5"),
+            ];
+            const csv = [headers.join(","), sample.join(",")].join("\n");
+            const blob = new Blob([csv], { type: "text/csv" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "opening_stock_template.csv";
+            a.click();
+          }}
+          className="flex items-center gap-2 bg-emerald-100 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-xl font-bold text-xs hover:bg-emerald-200"
+        >
+          <Download size={14} /> Download Template
+        </button>
+        <label
+          htmlFor="opening-stock-csv"
+          className="flex items-center gap-2 bg-blue-100 text-blue-700 border border-blue-200 px-4 py-2 rounded-xl font-bold text-xs cursor-pointer hover:bg-blue-200"
+        >
+          <Upload size={14} /> Upload Stock CSV
+        </label>
+        <input
+          id="opening-stock-csv"
+          type="file"
+          accept=".csv"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+              const csv = ev.target?.result as string;
+              const rows = csv.split(/\r?\n/).filter((l) => l.trim());
+              // header row skipped
+              let count = 0;
+              for (let i = 1; i < rows.length; i++) {
+                const cols = rows[i].split(",").map((c) => c.trim());
+                if (!cols[0] || !cols[1]) continue;
+                const cat = cols[0];
+                const iName = cols[1];
+                const ref = cols[2] || "";
+                const dt = cols[3] || new Date().toISOString().split("T")[0];
+                const shopQ = Number(cols[4] || 0);
+                const sale = Number(cols[5] || 0);
+                const purch = Number(cols[6] || 0);
+                const gQtys: Record<string, number> = {};
+                for (let j = 0; j < godowns.length; j++) {
+                  gQtys[godowns[j]] = Number(cols[7 + j] || 0);
+                }
+                const sku = `SKU_${cat}_${iName.trim()}_${Date.now()}_${i}`;
+                const existing = Object.values(inventory).find(
+                  (x) =>
+                    (!x.businessId || x.businessId === activeBusinessId) &&
+                    x.category === cat &&
+                    x.itemName.toLowerCase() === iName.trim().toLowerCase(),
+                );
+                if (existing) {
+                  setInventory((prev) => ({
+                    ...prev,
+                    [existing.sku]: {
+                      ...prev[existing.sku],
+                      shop: (prev[existing.sku].shop || 0) + shopQ,
+                      godowns: Object.fromEntries(
+                        godowns.map((g) => [
+                          g,
+                          (prev[existing.sku].godowns?.[g] || 0) +
+                            (gQtys[g] || 0),
+                        ]),
+                      ),
+                    },
+                  }));
+                } else {
+                  setInventory((prev) => ({
+                    ...prev,
+                    [sku]: {
+                      sku,
+                      category: cat,
+                      itemName: iName.trim(),
+                      attributes: {},
+                      shop: shopQ,
+                      godowns: { ...gQtys },
+                      saleRate: sale,
+                      purchaseRate: purch,
+                      businessId: activeBusinessId,
+                    },
+                  }));
+                }
+                setTransactions((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now() + i,
+                    type: "OPENING_STOCK",
+                    sku: existing?.sku || sku,
+                    itemName: iName.trim(),
+                    category: cat,
+                    notes: `CSV import. Ref: ${ref}. Date: ${dt}`,
+                    date: new Date().toISOString(),
+                    user: currentUser.username,
+                    businessId: activeBusinessId,
+                  } as Transaction,
+                ]);
+                count++;
+              }
+              showNotification(`Imported ${count} items`, "success");
+            };
+            reader.readAsText(file);
+            e.target.value = "";
+          }}
+        />
+      </div>
       <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-2xl">
         <h4 className="font-black text-xs uppercase tracking-widest text-emerald-900 mb-6">
           Add Stock Entry
@@ -3736,44 +3698,21 @@ function OpeningStockTab({
           </div>
 
           <div>
-            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 block mb-1">
-              Item Name
-            </p>
-            <div className="relative">
-              <input
-                type="text"
-                value={itemName}
-                onChange={(e) => handleItemNameChange(e.target.value)}
-                onBlur={() =>
-                  setTimeout(() => setShowPriceSuggestions(false), 200)
-                }
-                placeholder="Enter item name"
-                required
-                data-ocid="opening.item_name.input"
-                className="w-full border rounded-xl p-3 outline-none font-bold focus:ring-2 focus:ring-emerald-500 bg-gray-50 text-sm"
-              />
-              {showPriceSuggestions && priceSuggestions.length > 0 && (
-                <div className="absolute z-10 left-0 right-0 bg-white border rounded-xl shadow-xl mt-1">
-                  <p className="text-[9px] font-black uppercase text-gray-400 px-3 pt-2">
-                    Known prices for this item
-                  </p>
-                  {priceSuggestions.map((s, i) => (
-                    <button
-                      type="button"
-                      key={`price-${s.sale}-${s.purchase}-${i}`}
-                      onClick={() => {
-                        setSaleRate(s.sale);
-                        setPurchaseRate(s.purchase);
-                        setShowPriceSuggestions(false);
-                      }}
-                      className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-xs font-bold border-b last:border-0"
-                    >
-                      Sale: ₹{s.sale} · Purchase: ₹{s.purchase}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ItemNameComboOpening
+              categories={categories}
+              selectedCategory={selectedCategory}
+              value={itemName}
+              onChange={(val) => handleItemNameChange(val)}
+              inventory={inventory}
+              activeBusinessId={activeBusinessId}
+              showPriceSuggestions={showPriceSuggestions}
+              priceSuggestions={priceSuggestions}
+              onSelectPrice={(sale, purchase) => {
+                setSaleRate(sale);
+                setPurchaseRate(purchase);
+                setShowPriceSuggestions(false);
+              }}
+            />
           </div>
 
           {currentCategory?.fields.map((field) => (
@@ -4047,7 +3986,6 @@ function SettingsTab({
             "tabnames",
             "users",
             "columns",
-            "ai",
             "data",
           ] as const
         ).map((sub) => (
@@ -4071,9 +4009,7 @@ function SettingsTab({
                         ? "Logins"
                         : sub === "columns"
                           ? "Forms"
-                          : sub === "ai"
-                            ? "AI Settings"
-                            : "System Data"}
+                          : "System Data"}
           </button>
         ))}
       </div>
@@ -4643,7 +4579,7 @@ function SettingsTab({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm flex flex-col">
-                <div className="flex justify-between items-center mb-6">
+                <div className="flex justify-between items-center mb-4">
                   <h4 className="font-black text-xs uppercase tracking-widest text-blue-900">
                     Categories
                   </h4>
@@ -4665,6 +4601,88 @@ function SettingsTab({
                   >
                     <PlusCircle size={20} />
                   </button>
+                </div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const csv =
+                        "CategoryName,ItemName\nSafi,Sample Item\nLungi,Sample Lungi";
+                      const blob = new Blob([csv], { type: "text/csv" });
+                      const a = document.createElement("a");
+                      a.href = URL.createObjectURL(blob);
+                      a.download = "items_template.csv";
+                      a.click();
+                    }}
+                    className="flex items-center gap-1 bg-blue-100 text-blue-700 px-3 py-1.5 rounded-xl text-[10px] font-black"
+                  >
+                    <Download size={12} /> Template
+                  </button>
+                  <label
+                    htmlFor="items-csv-upload"
+                    className="flex items-center gap-1 bg-green-100 text-green-700 px-3 py-1.5 rounded-xl text-[10px] font-black cursor-pointer"
+                  >
+                    <Upload size={12} /> Upload Items
+                  </label>
+                  <input
+                    id="items-csv-upload"
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        const rows = (ev.target?.result as string)
+                          .split(/\r?\n/)
+                          .filter((l) => l.trim());
+                        let count = 0;
+                        for (let i = 1; i < rows.length; i++) {
+                          const [catName, iName] = rows[i]
+                            .split(",")
+                            .map((s) => s.trim());
+                          if (!catName || !iName) continue;
+                          const catExists = categories.find(
+                            (c) => c.name === catName,
+                          );
+                          if (!catExists)
+                            setCategories((prev) => [
+                              ...prev,
+                              { name: catName, fields: [] },
+                            ]);
+                          const newSku = `SKU_${catName}_${iName}_${Date.now()}_${i}`;
+                          const exists = Object.values(inventory).some(
+                            (x) =>
+                              (!x.businessId ||
+                                x.businessId === activeBusinessId) &&
+                              x.category === catName &&
+                              x.itemName.toLowerCase() === iName.toLowerCase(),
+                          );
+                          if (!exists) {
+                            setInventory((prev) => ({
+                              ...prev,
+                              [newSku]: {
+                                sku: newSku,
+                                category: catName,
+                                itemName: iName,
+                                attributes: {},
+                                shop: 0,
+                                godowns: {},
+                                saleRate: 0,
+                                purchaseRate: 0,
+                                businessId: activeBusinessId,
+                              },
+                            }));
+                            count++;
+                          }
+                        }
+                        showNotification(`Added ${count} new items`, "success");
+                      };
+                      reader.readAsText(file);
+                      e.target.value = "";
+                    }}
+                  />
                 </div>
                 <div className="space-y-3 overflow-y-auto max-h-80">
                   {categories.map((c) => (
@@ -4884,60 +4902,58 @@ function SettingsTab({
               <PlusCircle size={18} />
             </button>
           </div>
-          {Object.keys(transportTracking).length === 0 ? (
-            <p className="text-gray-400 font-bold text-xs text-center py-8">
-              No tracking URLs configured yet.
-            </p>
+          Object.keys(transportTracking).length === 0 ? (
+          <p className="text-gray-400 font-bold text-xs text-center py-8">
+            No tracking URLs configured yet.
+          </p>
           ) : (
-            <div className="space-y-3">
-              {Object.entries(transportTracking).map(([transport, url]) => (
-                <div
-                  key={transport}
-                  className="flex justify-between items-center bg-gray-50 border p-4 rounded-2xl font-bold text-sm"
-                >
-                  <div>
-                    <p className="font-black">{transport}</p>
-                    <p className="text-[10px] text-blue-600 font-bold truncate max-w-xs">
-                      {url}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const newUrl = prompt("Edit URL:", url);
-                        if (newUrl)
-                          setTransportTracking((prev) => ({
-                            ...prev,
-                            [transport]: newUrl.trim(),
-                          }));
-                      }}
-                      className="text-blue-500 bg-white p-2 rounded-lg shadow-sm"
-                    >
-                      <Edit size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (
-                          window.confirm(`Remove tracking for ${transport}?`)
-                        ) {
-                          setTransportTracking((prev) => {
-                            const c = { ...prev };
-                            delete c[transport];
-                            return c;
-                          });
-                        }
-                      }}
-                      className="text-red-400 bg-white p-2 rounded-lg shadow-sm"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+          <div className="space-y-3">
+            {Object.entries(transportTracking).map(([transport, url]) => (
+              <div
+                key={transport}
+                className="flex justify-between items-center bg-gray-50 border p-4 rounded-2xl font-bold text-sm"
+              >
+                <div>
+                  <p className="font-black">{transport}</p>
+                  <p className="text-[10px] text-blue-600 font-bold truncate max-w-xs">
+                    {url}
+                  </p>
                 </div>
-              ))}
-            </div>
-          )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newUrl = prompt("Edit URL:", url);
+                      if (newUrl)
+                        setTransportTracking((prev) => ({
+                          ...prev,
+                          [transport]: newUrl.trim(),
+                        }));
+                    }}
+                    className="text-blue-500 bg-white p-2 rounded-lg shadow-sm"
+                  >
+                    <Edit size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Remove tracking for ${transport}?`)) {
+                        setTransportTracking((prev) => {
+                          const c = { ...prev };
+                          delete c[transport];
+                          return c;
+                        });
+                      }
+                    }}
+                    className="text-red-400 bg-white p-2 rounded-lg shadow-sm"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          )
         </div>
       )}
 
@@ -4968,8 +4984,6 @@ function SettingsTab({
           </div>
         </div>
       )}
-
-      {activeSub === "ai" && <AISettingsPanel />}
 
       {activeSub === "data" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -5005,18 +5019,507 @@ function SettingsTab({
                 Load data from a JSON backup file
               </p>
             </div>
-            <p className="w-full bg-orange-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-lg mt-4 cursor-pointer block text-center">
+            <label
+              htmlFor="system-restore-input"
+              className="w-full bg-orange-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-lg mt-4 cursor-pointer block text-center"
+            >
               Select File
-              <input
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={importDatabase}
-              />
-            </p>
+            </label>
+            <input
+              id="system-restore-input"
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={importDatabase}
+            />
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ================= ITEM NAME COMBO (OPENING STOCK) ================= */
+function ItemNameComboOpening({
+  categories: _categories,
+  selectedCategory,
+  value,
+  onChange,
+  inventory,
+  activeBusinessId,
+  showPriceSuggestions,
+  priceSuggestions,
+  onSelectPrice,
+}: {
+  categories: Category[];
+  selectedCategory: string;
+  value: string;
+  onChange: (val: string) => void;
+  inventory: Record<string, InventoryItem>;
+  activeBusinessId: string;
+  showPriceSuggestions: boolean;
+  priceSuggestions: { sale: number; purchase: number }[];
+  onSelectPrice: (sale: number, purchase: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [inputVal, setInputVal] = useState(value);
+
+  useEffect(() => {
+    setInputVal(value);
+  }, [value]);
+
+  const suggestions = Array.from(
+    new Set(
+      Object.values(inventory)
+        .filter(
+          (i) =>
+            (!selectedCategory || i.category === selectedCategory) &&
+            (!i.businessId || i.businessId === activeBusinessId) &&
+            (!inputVal ||
+              i.itemName.toLowerCase().includes(inputVal.toLowerCase())),
+        )
+        .map((i) => i.itemName),
+    ),
+  );
+
+  return (
+    <div className="relative">
+      <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 block mb-1">
+        Item Name *
+      </p>
+      <input
+        required
+        type="text"
+        value={inputVal}
+        onChange={(e) => {
+          setInputVal(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Type or select item name"
+        data-ocid="opening.item_name.input"
+        className="w-full border rounded-xl p-3 outline-none font-bold focus:ring-2 focus:ring-emerald-500 bg-gray-50 text-sm"
+      />
+      {open && suggestions.length > 0 && (
+        <div className="absolute z-30 left-0 right-0 bg-white border rounded-xl shadow-2xl mt-1 max-h-40 overflow-y-auto">
+          {suggestions.map((name) => (
+            <button
+              type="button"
+              key={name}
+              onMouseDown={() => {
+                onChange(name);
+                setInputVal(name);
+                setOpen(false);
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-sm font-bold border-b last:border-0"
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+      {showPriceSuggestions && priceSuggestions.length > 0 && (
+        <div className="absolute z-20 left-0 right-0 bg-white border rounded-xl shadow-xl mt-1">
+          <p className="text-[9px] font-black uppercase text-gray-400 px-3 pt-2">
+            Known prices for this item
+          </p>
+          {priceSuggestions.map((s, i) => (
+            <button
+              type="button"
+              key={`price-${s.sale}-${s.purchase}-${i}`}
+              onMouseDown={() => onSelectPrice(s.sale, s.purchase)}
+              className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-xs font-bold border-b last:border-0"
+            >
+              Sale: ₹{s.sale} · Purchase: ₹{s.purchase}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= SALES TAB ================= */
+function SalesTab({
+  inventory,
+  updateStock,
+  setTransactions,
+  showNotification,
+  currentUser,
+  godowns: _godowns,
+  activeBusinessId,
+  categories,
+}: {
+  inventory: Record<string, InventoryItem>;
+  updateStock: (
+    sku: string,
+    details: Partial<InventoryItem>,
+    shopDelta: number,
+    godownDelta: number,
+    targetGodown?: string,
+  ) => void;
+  setTransactions: React.Dispatch<React.SetStateAction<Transaction[]>>;
+  showNotification: (m: string, t?: string) => void;
+  currentUser: AppUser;
+  godowns: string[];
+  activeBusinessId: string;
+  categories: Category[];
+}) {
+  const [saleLines, setSaleLines] = useState<
+    { sku: string; itemName: string; category: string; qty: number }[]
+  >([]);
+  const [saleDate, setSaleDate] = useState(
+    new Date().toISOString().split("T")[0],
+  );
+  const [saleRef, setSaleRef] = useState("");
+  const [lineCategory, setLineCategory] = useState(categories[0]?.name || "");
+  const [lineItemName, setLineItemName] = useState("");
+  const [lineQty, setLineQty] = useState("");
+
+  const addLine = () => {
+    if (!lineItemName || !lineQty) return;
+    const sku = Object.keys(inventory).find(
+      (s) =>
+        (!inventory[s].businessId ||
+          inventory[s].businessId === activeBusinessId) &&
+        inventory[s].itemName.toLowerCase() === lineItemName.toLowerCase() &&
+        inventory[s].category === lineCategory,
+    );
+    if (!sku) {
+      showNotification("Item not found in inventory", "error");
+      return;
+    }
+    const item = inventory[sku];
+    const qty = Number(lineQty);
+    if ((item.shop || 0) < qty) {
+      showNotification(`Only ${item.shop || 0} available in Shop`, "error");
+      return;
+    }
+    setSaleLines((prev) => [
+      ...prev,
+      { sku, itemName: item.itemName, category: lineCategory, qty },
+    ]);
+    setLineItemName("");
+    setLineQty("");
+  };
+
+  const confirmSale = () => {
+    if (saleLines.length === 0) return;
+    for (const line of saleLines) {
+      updateStock(line.sku, inventory[line.sku], -line.qty, 0, "Main Godown");
+      setTransactions((prev) => [
+        {
+          id: Date.now() + Math.random(),
+          type: "SALE",
+          sku: line.sku,
+          itemName: line.itemName,
+          category: line.category,
+          itemsCount: line.qty,
+          fromLocation: "Shop",
+          toLocation: "Customer",
+          date: saleDate,
+          user: currentUser.username,
+          notes: `Sale Ref: ${saleRef || "N/A"}`,
+          businessId: activeBusinessId,
+        },
+        ...prev,
+      ]);
+    }
+    showNotification(`Sale of ${saleLines.length} item(s) recorded`, "success");
+    setSaleLines([]);
+    setSaleRef("");
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in-down max-w-2xl mx-auto">
+      <div className="flex items-center gap-3 border-b pb-4">
+        <ShoppingCart className="text-rose-600" size={28} />
+        <div>
+          <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">
+            Sales
+          </h2>
+          <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">
+            Record sales from shop stock
+          </p>
+        </div>
+      </div>
+      <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+        <h3 className="font-black text-xs uppercase tracking-widest text-rose-900">
+          Add Sale Item
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div>
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+              Category
+            </p>
+            <select
+              value={lineCategory}
+              onChange={(e) => {
+                setLineCategory(e.target.value);
+                setLineItemName("");
+              }}
+              className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 outline-none"
+            >
+              {categories.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <ItemNameCombo
+              category={lineCategory}
+              value={lineItemName}
+              onChange={setLineItemName}
+              inventory={inventory}
+              activeBusinessId={activeBusinessId}
+            />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+              Qty (from Shop)
+            </p>
+            <input
+              type="number"
+              min="1"
+              value={lineQty}
+              onChange={(e) => setLineQty(e.target.value)}
+              className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 outline-none"
+              placeholder="0"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={addLine}
+          className="bg-rose-600 text-white font-black px-6 py-3 rounded-2xl text-xs uppercase tracking-widest shadow-md"
+        >
+          Add to Sale
+        </button>
+      </div>
+      {saleLines.length > 0 && (
+        <div className="bg-white rounded-[2rem] border overflow-hidden shadow-xl animate-fade-in-down">
+          <div className="bg-rose-700 text-white px-6 py-4 flex justify-between items-center">
+            <h3 className="font-black uppercase tracking-widest text-xs">
+              Pending Sale Items
+            </h3>
+            <span className="bg-white/20 px-3 py-1 rounded-full text-[10px] font-bold">
+              {saleLines.length} ITEMS
+            </span>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y">
+              {saleLines.map((line, idx) => (
+                <tr key={`${line.sku}-${idx}`}>
+                  <td className="px-6 py-4 font-bold">
+                    {line.itemName}
+                    <span className="ml-2 text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded uppercase">
+                      {line.category}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-center font-black text-rose-700">
+                    {line.qty} pcs
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSaleLines((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                      className="text-red-400 p-2 bg-red-50 rounded-xl"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="p-6 bg-gray-50 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+                  Date of Sale
+                </p>
+                <input
+                  type="date"
+                  value={saleDate}
+                  onChange={(e) => setSaleDate(e.target.value)}
+                  className="w-full border rounded-xl p-2.5 font-bold outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+                  Sale Reference
+                </p>
+                <input
+                  type="text"
+                  value={saleRef}
+                  onChange={(e) => setSaleRef(e.target.value)}
+                  placeholder="e.g. Invoice #001"
+                  className="w-full border rounded-xl p-2.5 font-bold outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={confirmSale}
+              className="w-full bg-rose-700 text-white font-black py-5 rounded-2xl uppercase tracking-[0.3em] shadow-xl hover:bg-rose-800 transition-transform active:scale-95 text-sm"
+            >
+              Confirm Sale
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= ITEM HISTORY PANEL ================= */
+function ItemHistoryPanel({
+  sku,
+  inventory,
+  transactions,
+  activeBusinessId,
+  onClose,
+}: {
+  sku: string | null;
+  inventory: Record<string, InventoryItem>;
+  transactions: Transaction[];
+  activeBusinessId: string;
+  onClose: () => void;
+}) {
+  if (!sku) return null;
+  const item = inventory[sku];
+  if (!item) return null;
+
+  const itemTxs = transactions
+    .filter(
+      (tx) =>
+        (!tx.businessId || tx.businessId === activeBusinessId) &&
+        (tx.sku === sku ||
+          tx.itemName?.toLowerCase() === item.itemName?.toLowerCase()),
+    )
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+  const dotColor = (type: string) => {
+    if (
+      type === "INWARD" ||
+      type === "OPENING_STOCK" ||
+      type === "DIRECT_STOCK"
+    )
+      return "bg-green-500";
+    if (type === "transfer") return "bg-purple-500";
+    if (type === "SALE") return "bg-red-500";
+    return "bg-gray-400";
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-900/60 z-[200] flex items-end md:items-center justify-center p-0 md:p-4">
+      <div className="bg-white w-full md:max-w-xl md:rounded-[2.5rem] rounded-t-[2rem] shadow-2xl max-h-[90vh] overflow-y-auto animate-fade-in-down">
+        <div className="sticky top-0 bg-white border-b px-6 py-5 flex justify-between items-start z-10 rounded-t-[2rem]">
+          <div>
+            <h3 className="font-black text-xl text-gray-900">
+              {item.itemName}
+            </h3>
+            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-0.5">
+              {item.category}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 bg-gray-100 rounded-full"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div className="p-6 space-y-5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="bg-green-50 border border-green-100 p-4 rounded-2xl text-center">
+              <p className="text-[10px] font-black uppercase text-green-600">
+                Shop
+              </p>
+              <p className="text-2xl font-black text-green-700">
+                {Number(item.shop || 0)}
+              </p>
+            </div>
+            {Object.entries(item.godowns || {}).map(([g, v]) => (
+              <div
+                key={g}
+                className="bg-amber-50 border border-amber-100 p-4 rounded-2xl text-center"
+              >
+                <p className="text-[10px] font-black uppercase text-amber-600 truncate">
+                  {g}
+                </p>
+                <p className="text-2xl font-black text-amber-700">
+                  {Number(v || 0)}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div>
+            <h4 className="font-black text-xs uppercase tracking-widest text-gray-500 mb-4">
+              Transaction Timeline
+            </h4>
+            {itemTxs.length === 0 ? (
+              <p className="text-gray-400 font-bold text-xs text-center py-8">
+                No transactions recorded yet
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {itemTxs.map((tx) => (
+                  <div key={tx.id} className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={`w-3 h-3 rounded-full mt-1.5 shrink-0 ${dotColor(tx.type)}`}
+                      />
+                      <div className="w-0.5 bg-gray-200 flex-1 mt-1" />
+                    </div>
+                    <div className="pb-4 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          {(tx.type === "INWARD" ||
+                            tx.type === "OPENING_STOCK" ||
+                            tx.type === "DIRECT_STOCK") && (
+                            <p className="font-black text-sm text-green-700">
+                              Added {tx.itemsCount ?? "?"} items{" "}
+                              {tx.biltyNo ? `(Bilty: ${tx.biltyNo})` : ""}
+                            </p>
+                          )}
+                          {tx.type === "transfer" && (
+                            <p className="font-black text-sm text-purple-700">
+                              Transferred {tx.itemsCount ?? "?"} pcs ·{" "}
+                              {tx.fromLocation} → {tx.toLocation}
+                            </p>
+                          )}
+                          {tx.type === "SALE" && (
+                            <p className="font-black text-sm text-red-700">
+                              Sold {tx.itemsCount ?? "?"} pcs from Shop
+                            </p>
+                          )}
+                          {tx.type === "STOCK_OVERWRITE" && (
+                            <p className="font-black text-sm text-gray-600">
+                              Stock adjusted
+                            </p>
+                          )}
+                          <p className="text-[10px] font-bold text-gray-400 mt-0.5">
+                            By {tx.transferredBy || tx.user || "?"} ·{" "}
+                            {tx.date?.split("T")[0] || tx.date}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5203,10 +5706,14 @@ export default function App() {
     inward: "Inward Processing",
     opening: "Opening Stock",
     transfer: "Transfers",
+    sales: "Sales",
     history: "History Log",
     settings: "Admin Settings",
   });
   const [_inwardRecords, _setInwardRecords] = useState<InwardRecord[]>([]);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -5459,6 +5966,12 @@ export default function App() {
                 label="Transfers"
               />
               <SidebarButton
+                active={activeTab === "sales"}
+                onClick={() => setActiveTab("sales")}
+                icon={ShoppingCart}
+                label={tabNames.sales}
+              />
+              <SidebarButton
                 active={activeTab === "history"}
                 onClick={() => setActiveTab("history")}
                 icon={History}
@@ -5512,6 +6025,7 @@ export default function App() {
             minStockThreshold={minStockThreshold}
             activeBusinessId={activeBusinessId}
             transactions={transactions}
+            onItemClick={(sku) => setSelectedHistoryItem(sku)}
           />
         )}
         {activeTab === "transit" && (
@@ -5535,6 +6049,8 @@ export default function App() {
             setPendingParcels={setPendingParcels}
             setOpeningParcel={setOpeningParcel}
             setActiveTab={setActiveTab}
+            setTransitGoods={setTransitGoods}
+            inventory={inventory}
             biltyPrefixes={biltyPrefixes}
             customColumns={customColumns.warehouse}
             showNotification={showNotification}
@@ -5594,6 +6110,18 @@ export default function App() {
             currentUser={currentUser}
           />
         )}
+        {activeTab === "sales" && currentUser.role !== "supplier" && (
+          <SalesTab
+            inventory={inventory}
+            updateStock={updateStock}
+            setTransactions={setTransactions}
+            showNotification={showNotification}
+            currentUser={currentUser}
+            godowns={godowns}
+            activeBusinessId={activeBusinessId}
+            categories={categories}
+          />
+        )}
         {activeTab === "history" && currentUser.role !== "supplier" && (
           <HistoryTab
             transactions={transactions}
@@ -5601,6 +6129,7 @@ export default function App() {
             setTransactions={setTransactions}
             activeBusinessId={activeBusinessId}
             currentUser={currentUser}
+            inventory={inventory}
           />
         )}
         {activeTab === "settings" && currentUser.role === "admin" && (
@@ -5634,6 +6163,15 @@ export default function App() {
             setTabNames={setTabNames}
           />
         )}
+
+        {/* Item History Panel */}
+        <ItemHistoryPanel
+          sku={selectedHistoryItem}
+          inventory={inventory}
+          transactions={transactions}
+          activeBusinessId={activeBusinessId}
+          onClose={() => setSelectedHistoryItem(null)}
+        />
 
         {/* Confirm Dialog */}
         {confirmDialog && (
@@ -5753,6 +6291,12 @@ export default function App() {
               onClick={() => setActiveTab("transfer")}
               icon={ArrowRightLeft}
               label="Move"
+            />
+            <NavButton
+              active={activeTab === "sales"}
+              onClick={() => setActiveTab("sales")}
+              icon={ShoppingCart}
+              label="Sales"
             />
           </>
         )}

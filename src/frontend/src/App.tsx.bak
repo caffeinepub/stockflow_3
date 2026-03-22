@@ -4,9 +4,12 @@ import {
   ArrowRightLeft,
   Box,
   CheckCircle,
+  ChevronDown,
+  ChevronUp,
   Download,
   Edit,
   History,
+  Key,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -72,6 +75,7 @@ interface TransitRecord {
   businessId: string;
   customData: Record<string, string>;
   category?: string;
+  itemCategory?: string;
 }
 interface PendingParcel {
   id: number;
@@ -84,6 +88,8 @@ interface PendingParcel {
   customData: Record<string, string>;
   itemName?: string;
   category?: string;
+  supplier?: string;
+  itemCategory?: string;
 }
 interface Transaction {
   id: number;
@@ -98,6 +104,10 @@ interface Transaction {
   itemName?: string;
   category?: string;
   notes?: string;
+  fromLocation?: string;
+  toLocation?: string;
+  transferredBy?: string;
+  subCategory?: string;
 }
 interface InwardRecord {
   id: number;
@@ -177,7 +187,7 @@ const getTotalGodownStock = (item: InventoryItem) => {
 };
 
 const callGemini = async (prompt: string, isJson = false): Promise<unknown> => {
-  const apiKey = "";
+  const apiKey = localStorage.getItem("geminiApiKey") || "";
   if (!apiKey)
     return isJson
       ? {}
@@ -242,10 +252,29 @@ function BiltyInput({
         </select>
         <input
           type="text"
+          inputMode="numeric"
           value={number}
+          onKeyDown={(e) => {
+            const allowed = [
+              "Backspace",
+              "Delete",
+              "ArrowLeft",
+              "ArrowRight",
+              "ArrowUp",
+              "ArrowDown",
+              "Tab",
+              "Enter",
+              "Home",
+              "End",
+            ];
+            if (!allowed.includes(e.key) && !/^[0-9]$/.test(e.key)) {
+              e.preventDefault();
+            }
+          }}
           onChange={(e) => {
-            setNumber(e.target.value);
-            if (onSearch) onSearch(prefix, e.target.value);
+            const numericOnly = e.target.value.replace(/[^0-9]/g, "");
+            setNumber(numericOnly);
+            if (onSearch) onSearch(prefix, numericOnly);
           }}
           className="w-2/3 border rounded-xl p-2.5 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold"
           placeholder="Numeric Part"
@@ -327,7 +356,7 @@ function DashboardTab({
   const lowStock = filteredSkus.filter((sku) => {
     const item = inventory[sku];
     const threshold = item.minThreshold ?? minStockThreshold;
-    return Number(item.shop || 0) + getTotalGodownStock(item) < threshold;
+    return getTotalGodownStock(item) < threshold;
   });
 
   const handleGetInsights = async () => {
@@ -396,24 +425,71 @@ function DashboardTab({
       )}
 
       {lowStock.length > 0 && !searchTerm && (
-        <div className="bg-red-50 border-2 border-red-100 p-5 rounded-3xl">
-          <h3 className="text-red-800 font-black text-xs uppercase flex items-center gap-2 mb-3">
-            <AlertTriangle size={16} /> Critical Stock Alerts
+        <div className="bg-red-50 border-2 border-red-200 p-5 rounded-3xl">
+          <h3 className="text-red-800 font-black text-xs uppercase flex items-center gap-2 mb-4">
+            <AlertTriangle size={16} /> Critical Stock Alerts ({lowStock.length}{" "}
+            items)
           </h3>
-          <div className="flex flex-wrap gap-2">
-            {lowStock.map((sku) => (
-              <span
-                key={sku}
-                className="bg-white border border-red-200 text-red-700 px-3 py-1.5 rounded-full text-[10px] font-black shadow-sm uppercase flex items-center gap-2"
-              >
-                {inventory[sku].itemName}
-                <span className="bg-red-100 px-1.5 rounded text-red-800">
-                  {Number(inventory[sku].shop || 0) +
-                    getTotalGodownStock(inventory[sku])}{" "}
-                  LEFT
-                </span>
-              </span>
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {lowStock.map((sku) => {
+              const item = inventory[sku];
+              const threshold = item.minThreshold ?? minStockThreshold;
+              const godownStock = getTotalGodownStock(item);
+              const godownEntries = Object.entries(item.godowns || {}).filter(
+                ([, v]) => Number(v) > 0,
+              );
+              return (
+                <div
+                  key={sku}
+                  className="bg-white border-2 border-red-200 rounded-2xl p-4 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div>
+                      <p className="font-black text-red-800 text-sm">
+                        {item.itemName}
+                      </p>
+                      <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">
+                        {item.category}
+                      </p>
+                    </div>
+                    <span className="bg-red-100 text-red-800 px-2 py-1 rounded-lg text-[10px] font-black shrink-0">
+                      {godownStock} LEFT
+                    </span>
+                  </div>
+                  {Object.keys(item.attributes || {}).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {Object.entries(item.attributes).map(([k, v]) => (
+                        <span
+                          key={k}
+                          className="text-[9px] bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded uppercase font-bold"
+                        >
+                          {k}: {v}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-[10px] font-bold text-gray-500 space-y-0.5">
+                    <p>
+                      Threshold:{" "}
+                      <span className="text-red-700 font-black">
+                        {threshold}
+                      </span>{" "}
+                      | Godown:{" "}
+                      <span className="text-red-700 font-black">
+                        {godownStock}
+                      </span>
+                    </p>
+                    {godownEntries.length > 0 && (
+                      <p className="text-gray-400">
+                        {godownEntries
+                          .map(([g, v]) => `${g}: ${v}`)
+                          .join(" · ")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -451,59 +527,65 @@ function DashboardTab({
                     </tr>
                   </thead>
                   <tbody className="divide-y text-sm">
-                    {grouped[cat].map((item) => (
-                      <tr
-                        key={item.sku}
-                        className="hover:bg-blue-50/30 transition-colors"
-                      >
-                        <td className="px-6 py-4">
-                          <div className="font-bold text-gray-900">
-                            {item.itemName}
-                          </div>
-                          <div className="flex flex-wrap gap-1 mt-1.5">
-                            {Object.entries(item.attributes || {}).map(
-                              ([k, v]) => (
-                                <span
-                                  key={k}
-                                  className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border uppercase font-bold"
-                                >
-                                  {String(v)}
-                                </span>
-                              ),
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-center font-black text-green-700 text-lg">
-                          {Number(item.shop || 0)}
-                        </td>
-                        <td className="px-6 py-4 text-center font-black text-amber-700">
-                          <div className="text-lg">
-                            {getTotalGodownStock(item)}
-                          </div>
-                          <div className="text-[9px] text-gray-400 font-bold mt-0.5 text-left">
-                            {Object.entries(item.godowns || {})
-                              .filter(([, v]) => Number(v) > 0)
-                              .map(([g, v]) => (
-                                <span key={g} className="block">
-                                  {g}: {v}
-                                </span>
-                              ))}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right font-black text-blue-700 text-lg">
-                          {Number(item.saleRate || 0)}
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => shareWhatsApp(item)}
-                            className="p-2 bg-green-50 text-green-600 rounded-xl hover:bg-green-100 transition-colors"
-                          >
-                            <Share2 size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {grouped[cat].map((item) => {
+                      const itemThreshold =
+                        item.minThreshold ?? minStockThreshold;
+                      const godownStock = getTotalGodownStock(item);
+                      const isCritical = godownStock < itemThreshold;
+                      return (
+                        <tr
+                          key={item.sku}
+                          className={`transition-colors ${isCritical ? "bg-red-50 hover:bg-red-100/60" : "hover:bg-blue-50/30"}`}
+                        >
+                          <td className="px-6 py-4">
+                            <div className="font-bold text-gray-900">
+                              {item.itemName}
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {Object.entries(item.attributes || {}).map(
+                                ([k, v]) => (
+                                  <span
+                                    key={k}
+                                    className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border uppercase font-bold"
+                                  >
+                                    {String(v)}
+                                  </span>
+                                ),
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-center font-black text-green-700 text-lg">
+                            {Number(item.shop || 0)}
+                          </td>
+                          <td className="px-6 py-4 text-center font-black text-amber-700">
+                            <div className="text-lg">
+                              {getTotalGodownStock(item)}
+                            </div>
+                            <div className="text-[9px] text-gray-400 font-bold mt-0.5 text-left">
+                              {Object.entries(item.godowns || {})
+                                .filter(([, v]) => Number(v) > 0)
+                                .map(([g, v]) => (
+                                  <span key={g} className="block">
+                                    {g}: {v}
+                                  </span>
+                                ))}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-right font-black text-blue-700 text-lg">
+                            {Number(item.saleRate || 0)}
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              type="button"
+                              onClick={() => shareWhatsApp(item)}
+                              className="p-2 bg-green-50 text-green-600 rounded-xl hover:bg-green-100 transition-colors"
+                            >
+                              <Share2 size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -524,7 +606,9 @@ function TransitTab({
   customColumns,
   setConfirmDialog,
   activeBusinessId,
-  allTransitGoods,
+  allTransitGoods: _allTransitGoods,
+  categories,
+  transportTracking,
 }: {
   transitGoods: TransitRecord[];
   setTransitGoods: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
@@ -537,6 +621,8 @@ function TransitTab({
   ) => void;
   activeBusinessId: string;
   allTransitGoods?: TransitRecord[];
+  categories?: Category[];
+  transportTracking?: Record<string, string>;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
@@ -545,6 +631,7 @@ function TransitTab({
     transportName: "",
     supplierName: "",
     itemName: "",
+    itemCategory: "",
     packages: "",
     date: new Date().toISOString().split("T")[0],
     customData: {} as Record<string, string>,
@@ -611,16 +698,16 @@ function TransitTab({
     if (!biltyNumber) return showNotification("Bilty number required", "error");
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
-    // Duplicate bilty check across all data
-    const allExisting = allTransitGoods || transitGoods;
-    if (
-      allExisting.some((g) => g.biltyNo?.toLowerCase() === bNo.toLowerCase())
-    ) {
+    const isDupeTransit = (transitGoods || []).some(
+      (g) =>
+        (!g.businessId || g.businessId === activeBusinessId) &&
+        g.biltyNo?.toLowerCase() === bNo.toLowerCase(),
+    );
+    if (isDupeTransit)
       return showNotification(
         `Bilty ${bNo} already exists in Transit!`,
         "error",
       );
-    }
     setTransitGoods((prev) => [
       {
         id: Date.now(),
@@ -637,6 +724,7 @@ function TransitTab({
       transportName: "",
       supplierName: "",
       itemName: "",
+      itemCategory: "",
       packages: "",
       date: new Date().toISOString().split("T")[0],
       customData: {},
@@ -743,6 +831,25 @@ function TransitTab({
                 }
                 className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 focus:bg-white outline-none"
               />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+                Item Category
+              </p>
+              <select
+                value={form.itemCategory}
+                onChange={(e) =>
+                  setForm({ ...form, itemCategory: e.target.value })
+                }
+                className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 focus:bg-white outline-none"
+              >
+                <option value="">All Categories</option>
+                {(categories || []).map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
@@ -864,23 +971,45 @@ function TransitTab({
                     {item.biltyNo}
                   </h3>
                 </div>
-                {currentUser.role !== "supplier" && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setConfirmDialog({
-                        message: "Remove from transit?",
-                        onConfirm: () =>
-                          setTransitGoods((prev) =>
-                            prev.filter((g) => g.id !== item.id),
-                          ),
-                      })
-                    }
-                    className="text-red-400 p-2 hover:bg-red-50 rounded-xl transition-colors"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
+                <div className="flex gap-2 items-center">
+                  {(() => {
+                    const trackUrl =
+                      transportTracking && item.transportName
+                        ? transportTracking[item.transportName] ||
+                          transportTracking[
+                            item.transportName?.toLowerCase()
+                          ] ||
+                          null
+                        : null;
+                    return trackUrl ? (
+                      <a
+                        href={trackUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-blue-100 text-blue-700 px-3 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-blue-200 transition-colors"
+                      >
+                        Track Live
+                      </a>
+                    ) : null;
+                  })()}
+                  {currentUser.role !== "supplier" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfirmDialog({
+                          message: "Remove from transit?",
+                          onConfirm: () =>
+                            setTransitGoods((prev) =>
+                              prev.filter((g) => g.id !== item.id),
+                            ),
+                        })
+                      }
+                      className="text-red-400 p-2 hover:bg-red-50 rounded-xl transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-tight">
                 <p>
@@ -893,6 +1022,12 @@ function TransitTab({
                   Transport:{" "}
                   <span className="text-gray-700">
                     {item.transportName || "-"}
+                  </span>
+                </p>
+                <p>
+                  Category:{" "}
+                  <span className="text-gray-700">
+                    {item.category || item.itemCategory || "-"}
                   </span>
                 </p>
                 <p>
@@ -925,6 +1060,9 @@ function WarehouseTab({
   activeBusinessId,
   transportTracking,
   allBiltyNos,
+  existingQueueBiltyNos,
+  transitGoods,
+  categories,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -939,11 +1077,17 @@ function WarehouseTab({
   activeBusinessId: string;
   transportTracking?: Record<string, string>;
   allBiltyNos?: string[];
+  existingQueueBiltyNos?: string[];
+  transitGoods?: TransitRecord[];
+  categories?: Category[];
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
   const [form, setForm] = useState({
     transportName: "",
+    supplier: "",
+    itemCategory: "",
+    itemName: "",
     packages: "",
     dateReceived: new Date().toISOString().split("T")[0],
     arrivalDate: new Date().toISOString().split("T")[0],
@@ -952,15 +1096,44 @@ function WarehouseTab({
   const [searchTerm, setSearchTerm] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterCategory, setFilterCategory] = useState("");
+  const [filterItemName, setFilterItemName] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+
+  // Auto-fill from Transit when bilty matches
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only run on bilty change
+  useEffect(() => {
+    if (!biltyNumber || !transitGoods) return;
+    const bNo =
+      biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
+    const transitMatch = (transitGoods || []).find(
+      (g) =>
+        (!g.businessId || g.businessId === activeBusinessId) &&
+        g.biltyNo?.toLowerCase() === bNo.toLowerCase(),
+    );
+    if (transitMatch) {
+      setForm((prev) => ({
+        ...prev,
+        transportName: transitMatch.transportName || prev.transportName,
+        supplier: transitMatch.supplierName || prev.supplier,
+        itemCategory:
+          transitMatch.itemCategory ||
+          transitMatch.category ||
+          prev.itemCategory,
+        itemName: transitMatch.itemName || prev.itemName,
+      }));
+      showNotification("Auto-filled from Transit entry.", "success");
+    }
+  }, [biltyNumber, biltyPrefix]);
 
   const handleLog = (e: React.FormEvent) => {
     e.preventDefault();
     if (!biltyNumber) return showNotification("Bilty number required", "error");
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
-    if (allBiltyNos?.some((b) => b.toLowerCase() === bNo.toLowerCase())) {
-      return showNotification(`Bilty ${bNo} already exists!`, "error");
+    const queueBiltyList = existingQueueBiltyNos ?? allBiltyNos ?? [];
+    if (queueBiltyList.some((b) => b.toLowerCase() === bNo.toLowerCase())) {
+      return showNotification(`Bilty ${bNo} already exists in Queue!`, "error");
     }
     setPendingParcels((prev) => [
       {
@@ -974,6 +1147,9 @@ function WarehouseTab({
     setBiltyNumber("");
     setForm({
       transportName: "",
+      supplier: "",
+      itemCategory: "",
+      itemName: "",
       packages: "",
       dateReceived: new Date().toISOString().split("T")[0],
       arrivalDate: new Date().toISOString().split("T")[0],
@@ -993,6 +1169,13 @@ function WarehouseTab({
     const pDate = p.arrivalDate || p.dateReceived;
     if (filterDateFrom && pDate < filterDateFrom) return false;
     if (filterDateTo && pDate > filterDateTo) return false;
+    if (filterCategory && (p.itemCategory || p.category) !== filterCategory)
+      return false;
+    if (
+      filterItemName &&
+      !p.itemName?.toLowerCase().includes(filterItemName.toLowerCase())
+    )
+      return false;
     return true;
   });
   filtered = [...filtered].sort((a, b) => {
@@ -1028,6 +1211,47 @@ function WarehouseTab({
               onChange={(e) =>
                 setForm({ ...form, transportName: e.target.value })
               }
+              className="w-full border rounded-xl p-2.5 outline-none font-bold bg-gray-50 focus:bg-white"
+            />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+              Supplier
+            </p>
+            <input
+              type="text"
+              value={form.supplier}
+              onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+              className="w-full border rounded-xl p-2.5 outline-none font-bold bg-gray-50 focus:bg-white"
+            />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+              Item Category
+            </p>
+            <select
+              value={form.itemCategory}
+              onChange={(e) =>
+                setForm({ ...form, itemCategory: e.target.value })
+              }
+              className="w-full border rounded-xl p-2.5 outline-none font-bold bg-gray-50 focus:bg-white"
+            >
+              <option value="">Select Category</option>
+              {(categories || []).map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+              Item Name
+            </p>
+            <input
+              type="text"
+              value={form.itemName}
+              onChange={(e) => setForm({ ...form, itemName: e.target.value })}
               className="w-full border rounded-xl p-2.5 outline-none font-bold bg-gray-50 focus:bg-white"
             />
           </div>
@@ -1103,6 +1327,47 @@ function WarehouseTab({
           <option value="desc">Newest First</option>
           <option value="asc">Oldest First</option>
         </select>
+        {(filterDateFrom ||
+          filterDateTo ||
+          filterCategory ||
+          filterItemName) && (
+          <button
+            type="button"
+            onClick={() => {
+              setFilterDateFrom("");
+              setFilterDateTo("");
+              setFilterCategory("");
+              setFilterItemName("");
+            }}
+            className="text-xs text-red-500 font-bold bg-red-50 px-3 py-2 rounded-xl"
+          >
+            Clear All
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-3 items-center">
+        <select
+          value={filterCategory}
+          onChange={(e) => setFilterCategory(e.target.value)}
+          className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-amber-400 min-w-[150px]"
+        >
+          <option value="">All Categories</option>
+          {(categories || []).map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <div className="relative flex-1 min-w-[160px]">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Filter by item name..."
+            value={filterItemName}
+            onChange={(e) => setFilterItemName(e.target.value)}
+            className="w-full pl-9 pr-4 py-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-amber-400 font-bold text-xs bg-white"
+          />
+        </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {filtered.map((p) => {
@@ -1129,6 +1394,24 @@ function WarehouseTab({
                       <p>
                         Transport:{" "}
                         <span className="text-gray-700">{p.transportName}</span>
+                      </p>
+                    )}
+                    {p.supplier && (
+                      <p>
+                        Supplier:{" "}
+                        <span className="text-gray-700">{p.supplier}</span>
+                      </p>
+                    )}
+                    {p.itemCategory && (
+                      <p>
+                        Category:{" "}
+                        <span className="text-gray-700">{p.itemCategory}</span>
+                      </p>
+                    )}
+                    {p.itemName && (
+                      <p>
+                        Item:{" "}
+                        <span className="text-gray-700">{p.itemName}</span>
                       </p>
                     )}
                     {p.packages && (
@@ -1195,6 +1478,156 @@ function WarehouseTab({
   );
 }
 
+/* ================= ITEM NAME COMBO ================= */
+function ItemNameCombo({
+  category,
+  value,
+  onChange,
+  inventory,
+  activeBusinessId,
+}: {
+  category: string;
+  value: string;
+  onChange: (val: string) => void;
+  inventory: Record<string, InventoryItem>;
+  activeBusinessId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [inputVal, setInputVal] = useState(value);
+
+  useEffect(() => {
+    setInputVal(value);
+  }, [value]);
+
+  const suggestions = Array.from(
+    new Set(
+      Object.values(inventory)
+        .filter(
+          (i) =>
+            (!category || i.category === category) &&
+            (!i.businessId || i.businessId === activeBusinessId) &&
+            (!inputVal ||
+              i.itemName.toLowerCase().includes(inputVal.toLowerCase())),
+        )
+        .map((i) => i.itemName),
+    ),
+  );
+
+  return (
+    <div className="relative">
+      <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+        Item Name *
+      </p>
+      <input
+        required
+        type="text"
+        value={inputVal}
+        onChange={(e) => {
+          setInputVal(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={category ? "Type or select item name" : "Type item name"}
+        className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+      />
+      {open && suggestions.length > 0 && (
+        <div className="absolute z-30 left-0 right-0 bg-white border rounded-xl shadow-2xl mt-1 max-h-40 overflow-y-auto">
+          {suggestions.map((name) => (
+            <button
+              type="button"
+              key={name}
+              onMouseDown={() => {
+                onChange(name);
+                setInputVal(name);
+                setOpen(false);
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-blue-50 text-sm font-bold border-b last:border-0"
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= AI SETTINGS PANEL ================= */
+function AISettingsPanel() {
+  const [apiKey, setApiKey] = useState(
+    () => localStorage.getItem("geminiApiKey") || "",
+  );
+  const [showKey, setShowKey] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    localStorage.setItem("geminiApiKey", apiKey.trim());
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-lg">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="bg-indigo-100 text-indigo-600 p-3 rounded-2xl">
+          <Key size={20} />
+        </div>
+        <div>
+          <h4 className="font-black text-sm uppercase tracking-widest text-gray-800">
+            AI / Gemini Settings
+          </h4>
+          <p className="text-[10px] text-gray-400 font-bold mt-0.5">
+            Enter your Google Gemini API key to enable AI features.
+          </p>
+        </div>
+      </div>
+      <div className="space-y-4">
+        <div>
+          <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+            Gemini API Key
+          </p>
+          <div className="flex gap-2">
+            <input
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="AIza..."
+              className="flex-1 border rounded-2xl p-4 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              className="bg-gray-100 hover:bg-gray-200 px-4 rounded-2xl font-bold text-xs text-gray-600 transition-colors"
+            >
+              {showKey ? "Hide" : "Show"}
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleSave}
+          className={`w-full font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-lg transition-colors ${saved ? "bg-green-600 text-white" : "bg-indigo-600 text-white hover:bg-indigo-700"}`}
+        >
+          {saved ? "Saved!" : "Save API Key"}
+        </button>
+        <p className="text-[10px] text-gray-400 font-bold text-center">
+          Get a free API key at{" "}
+          <a
+            href="https://aistudio.google.com/app/apikey"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-indigo-600 underline"
+          >
+            aistudio.google.com
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ================= INWARD TAB ================= */
 function InwardTab({
   inventory,
@@ -1214,6 +1647,8 @@ function InwardTab({
   biltyPrefixes,
   customColumns,
   activeBusinessId,
+  transactions,
+  setInventory,
 }: {
   inventory: Record<string, InventoryItem>;
   categories: Category[];
@@ -1244,6 +1679,10 @@ function InwardTab({
   biltyPrefixes: string[];
   customColumns: ColumnDef[];
   activeBusinessId: string;
+  transactions: Transaction[];
+  setInventory: React.Dispatch<
+    React.SetStateAction<Record<string, InventoryItem>>
+  >;
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1326,6 +1765,58 @@ function InwardTab({
 
   const handleFinalSave = () => {
     if (baleItems.length === 0) return;
+    // Check duplicate INWARD bilty
+    if (!isDirectEntry) {
+      const bNo =
+        biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
+      const alreadyProcessed = transactions.some(
+        (tx) =>
+          tx.type === "INWARD" &&
+          (!tx.businessId || tx.businessId === activeBusinessId) &&
+          tx.biltyNo?.toLowerCase() === bNo.toLowerCase(),
+      );
+      if (alreadyProcessed) {
+        showNotification(
+          `Bilty ${bNo} has already been processed in Inward!`,
+          "error",
+        );
+        return;
+      }
+    }
+    // Auto-create new inventory items typed in combo box
+    for (const item of baleItems) {
+      if (item.itemName && item.category) {
+        const exists = Object.values(inventory).some(
+          (inv) =>
+            (!inv.businessId || inv.businessId === activeBusinessId) &&
+            inv.category === item.category &&
+            inv.itemName.toLowerCase() === item.itemName.toLowerCase(),
+        );
+        if (!exists) {
+          const newSku = generateSku(
+            item.category,
+            item.itemName,
+            {},
+            "0",
+            activeBusinessId,
+          );
+          setInventory((prev) => ({
+            ...prev,
+            [newSku]: {
+              sku: newSku,
+              category: item.category,
+              itemName: item.itemName,
+              attributes: {},
+              shop: 0,
+              godowns: {},
+              saleRate: 0,
+              purchaseRate: 0,
+              businessId: activeBusinessId,
+            },
+          }));
+        }
+      }
+    }
     for (const item of baleItems) {
       if (Number(item.shopQty) > 0)
         updateStock(
@@ -1511,9 +2002,9 @@ function InwardTab({
             placeholder="Search queue bilty..."
             className="w-full border border-amber-200 rounded-xl p-3 font-bold bg-white outline-none focus:ring-2 focus:ring-amber-400 text-sm"
           />
-          {showQueueDropdown && (
-            <div className="absolute z-20 left-0 right-0 mx-4 bg-white border rounded-2xl shadow-2xl mt-1 max-h-40 overflow-y-auto">
-              {pendingParcels
+          {showQueueDropdown &&
+            (() => {
+              const queueEntries = pendingParcels
                 .filter(
                   (p) =>
                     (!p.businessId || p.businessId === activeBusinessId) &&
@@ -1522,36 +2013,152 @@ function InwardTab({
                         ?.toLowerCase()
                         .includes(queueBiltySearch.toLowerCase())),
                 )
-                .slice(0, 8)
-                .map((p) => (
-                  <button
-                    type="button"
-                    key={p.id}
-                    onClick={() => {
-                      setMatchedDetails(p);
-                      setQueueBiltySearch(p.biltyNo);
-                      setShowQueueDropdown(false);
-                      setOpeningParcel(p);
-                      showNotification("Queue entry selected!", "success");
-                    }}
-                    className="w-full text-left p-3 hover:bg-amber-50 cursor-pointer border-b last:border-0"
-                  >
-                    <p className="font-black text-sm">{p.biltyNo}</p>
-                    <p className="text-[10px] text-gray-400 font-bold uppercase">
-                      {p.transportName} · {p.packages} pkgs ·{" "}
-                      {p.arrivalDate || p.dateReceived}
+                .slice(0, 6);
+              const transitEntries = transitGoods
+                .filter(
+                  (g) =>
+                    (!g.businessId || g.businessId === activeBusinessId) &&
+                    (!queueBiltySearch ||
+                      g.biltyNo
+                        ?.toLowerCase()
+                        .includes(queueBiltySearch.toLowerCase())),
+                )
+                .slice(0, 4);
+              const totalEntries = queueEntries.length + transitEntries.length;
+              return (
+                <div className="absolute z-20 left-0 right-0 mx-4 bg-white border rounded-2xl shadow-2xl mt-1 max-h-56 overflow-y-auto">
+                  {queueEntries.map((p) => (
+                    <button
+                      type="button"
+                      key={`q-${p.id}`}
+                      onClick={() => {
+                        setMatchedDetails(p);
+                        setQueueBiltySearch(p.biltyNo);
+                        setShowQueueDropdown(false);
+                        setOpeningParcel(p);
+                        const parts = p.biltyNo.split("-");
+                        if (parts.length >= 2) {
+                          const prefix = parts.slice(0, -1).join("-");
+                          const num = parts[parts.length - 1];
+                          if (biltyPrefixes.includes(prefix)) {
+                            setBiltyPrefix(prefix);
+                            setBiltyNumber(num);
+                          } else {
+                            setBiltyPrefix("0");
+                            setBiltyNumber(p.biltyNo);
+                          }
+                        } else {
+                          setBiltyPrefix("0");
+                          setBiltyNumber(p.biltyNo);
+                        }
+                        setItemForm((prev) => ({
+                          ...prev,
+                          category:
+                            p.itemCategory || p.category || prev.category || "",
+                          itemName: p.itemName || prev.itemName || "",
+                        }));
+                        showNotification(
+                          "Queue entry selected! Fields auto-filled.",
+                          "success",
+                        );
+                      }}
+                      className="w-full text-left p-3 hover:bg-amber-50 cursor-pointer border-b last:border-0"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full uppercase">
+                          Queue
+                        </span>
+                        <p className="font-black text-sm">{p.biltyNo}</p>
+                      </div>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">
+                        {p.transportName} · {p.packages} pkgs ·{" "}
+                        {p.arrivalDate || p.dateReceived}
+                      </p>
+                      {(p.supplier || p.itemCategory || p.itemName) && (
+                        <p className="text-[10px] text-amber-700 font-bold mt-0.5">
+                          {[p.supplier, p.itemCategory, p.itemName]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      )}
+                    </button>
+                  ))}
+                  {transitEntries.map((g) => (
+                    <button
+                      type="button"
+                      key={`t-${g.id}`}
+                      onClick={() => {
+                        const fakeParcel: PendingParcel = {
+                          id: g.id,
+                          biltyNo: g.biltyNo,
+                          transportName: g.transportName,
+                          packages: g.packages,
+                          dateReceived: g.date,
+                          arrivalDate: g.date,
+                          businessId: g.businessId,
+                          customData: g.customData || {},
+                          itemName: g.itemName,
+                          category: g.category || g.itemCategory,
+                          supplier: g.supplierName,
+                          itemCategory: g.itemCategory || g.category,
+                        };
+                        setMatchedDetails(fakeParcel);
+                        setQueueBiltySearch(g.biltyNo);
+                        setShowQueueDropdown(false);
+                        const parts = g.biltyNo.split("-");
+                        if (parts.length >= 2) {
+                          const prefix = parts.slice(0, -1).join("-");
+                          const num = parts[parts.length - 1];
+                          if (biltyPrefixes.includes(prefix)) {
+                            setBiltyPrefix(prefix);
+                            setBiltyNumber(num);
+                          } else {
+                            setBiltyPrefix("0");
+                            setBiltyNumber(g.biltyNo);
+                          }
+                        } else {
+                          setBiltyPrefix("0");
+                          setBiltyNumber(g.biltyNo);
+                        }
+                        setItemForm((prev) => ({
+                          ...prev,
+                          category:
+                            g.itemCategory || g.category || prev.category || "",
+                          itemName: g.itemName || prev.itemName || "",
+                        }));
+                        showNotification(
+                          "Transit entry selected! Fields auto-filled.",
+                          "success",
+                        );
+                      }}
+                      className="w-full text-left p-3 hover:bg-indigo-50 cursor-pointer border-b last:border-0"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-[8px] font-black bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full uppercase">
+                          Transit
+                        </span>
+                        <p className="font-black text-sm">{g.biltyNo}</p>
+                      </div>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase mt-0.5">
+                        {g.transportName} · {g.packages} pkgs · {g.date}
+                      </p>
+                      {(g.supplierName || g.itemCategory || g.itemName) && (
+                        <p className="text-[10px] text-indigo-700 font-bold mt-0.5">
+                          {[g.supplierName, g.itemCategory, g.itemName]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      )}
+                    </button>
+                  ))}
+                  {totalEntries === 0 && (
+                    <p className="p-3 text-xs text-gray-400 font-bold">
+                      No matching entries found
                     </p>
-                  </button>
-                ))}
-              {pendingParcels.filter(
-                (p) => !p.businessId || p.businessId === activeBusinessId,
-              ).length === 0 && (
-                <p className="p-3 text-xs text-gray-400 font-bold">
-                  No entries in queue
-                </p>
-              )}
-            </div>
-          )}
+                  )}
+                </div>
+              );
+            })()}
         </div>
       )}
 
@@ -1598,9 +2205,44 @@ function InwardTab({
               />
             </div>
             {matchedDetails && (
-              <div className="bg-green-50 text-green-700 p-3 rounded-xl border border-green-200 text-xs font-bold flex items-center gap-2 mt-2">
-                <CheckCircle size={16} /> Record connected. Transporter:{" "}
-                {(matchedDetails as TransitRecord).transportName || "-"}
+              <div className="bg-green-50 text-green-700 p-3 rounded-xl border border-green-200 text-xs font-bold mt-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <CheckCircle size={16} /> Record connected.
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px] mt-1">
+                  {(matchedDetails as TransitRecord).transportName && (
+                    <p>
+                      Transport:{" "}
+                      <b>{(matchedDetails as TransitRecord).transportName}</b>
+                    </p>
+                  )}
+                  {(matchedDetails as PendingParcel).supplier && (
+                    <p>
+                      Supplier:{" "}
+                      <b>{(matchedDetails as PendingParcel).supplier}</b>
+                    </p>
+                  )}
+                  {((matchedDetails as PendingParcel).itemCategory ||
+                    (matchedDetails as TransitRecord).category) && (
+                    <p>
+                      Category:{" "}
+                      <b>
+                        {(matchedDetails as PendingParcel).itemCategory ||
+                          (matchedDetails as TransitRecord).category}
+                      </b>
+                    </p>
+                  )}
+                  {((matchedDetails as PendingParcel).itemName ||
+                    (matchedDetails as TransitRecord).itemName) && (
+                    <p>
+                      Item:{" "}
+                      <b>
+                        {(matchedDetails as PendingParcel).itemName ||
+                          (matchedDetails as TransitRecord).itemName}
+                      </b>
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </>
@@ -1633,21 +2275,13 @@ function InwardTab({
                 ))}
               </select>
             </div>
-            <div>
-              <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-                Item Name *
-              </p>
-              <input
-                required
-                type="text"
-                placeholder="Item Name"
-                value={itemForm.itemName}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, itemName: e.target.value })
-                }
-                className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-            </div>
+            <ItemNameCombo
+              category={itemForm.category}
+              value={itemForm.itemName}
+              onChange={(val) => setItemForm({ ...itemForm, itemName: val })}
+              inventory={inventory}
+              activeBusinessId={activeBusinessId}
+            />
           </div>
           {selectedCat && (
             <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
@@ -1750,7 +2384,9 @@ function InwardTab({
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-6">
+          <div
+            className={`grid gap-6 ${currentUser.role === "staff" ? "grid-cols-1" : "grid-cols-2"}`}
+          >
             <div>
               <p className="text-[10px] font-black uppercase text-blue-600 ml-1">
                 Sale Rate (₹) *
@@ -1765,19 +2401,21 @@ function InwardTab({
                 className="w-full border-2 border-blue-200 rounded-xl p-3 font-black text-blue-700 text-lg outline-none focus:bg-white"
               />
             </div>
-            <div>
-              <p className="text-[10px] font-black uppercase text-gray-500 ml-1">
-                Pur. Rate (₹)
-              </p>
-              <input
-                type="number"
-                value={itemForm.purchaseRate}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, purchaseRate: e.target.value })
-                }
-                className="w-full border rounded-xl p-3 font-black text-gray-600 outline-none focus:bg-white"
-              />
-            </div>
+            {currentUser.role !== "staff" && (
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-500 ml-1">
+                  Pur. Rate (₹)
+                </p>
+                <input
+                  type="number"
+                  value={itemForm.purchaseRate}
+                  onChange={(e) =>
+                    setItemForm({ ...itemForm, purchaseRate: e.target.value })
+                  }
+                  className="w-full border rounded-xl p-3 font-black text-gray-600 outline-none focus:bg-white"
+                />
+              </div>
+            )}
           </div>
           <button
             type="submit"
@@ -1913,6 +2551,8 @@ function TransferTab({
   showNotification,
   godowns,
   activeBusinessId,
+  setTransactions,
+  currentUser,
 }: {
   inventory: Record<string, InventoryItem>;
   updateStock: (
@@ -1925,6 +2565,8 @@ function TransferTab({
   showNotification: (m: string, t?: string) => void;
   godowns: string[];
   activeBusinessId: string;
+  setTransactions?: React.Dispatch<React.SetStateAction<Transaction[]>>;
+  currentUser?: AppUser;
 }) {
   const [mode, setMode] = useState("G2S");
   const [targetG, setTargetG] = useState(godowns?.[0] || "Main Godown");
@@ -1949,14 +2591,45 @@ function TransferTab({
     if (!selectedSku || !qty) return;
     const item = inventory[selectedSku];
     const qVal = Number(qty);
+    let fromLoc = "";
+    let toLoc = "";
     if (mode === "G2S") {
       if ((item.godowns?.[targetG] || 0) < qVal)
         return showNotification(`Not enough stock in ${targetG}`, "error");
       updateStock(selectedSku, item, qVal, -qVal, targetG);
+      fromLoc = targetG;
+      toLoc = "Shop";
     } else {
       if ((item.shop || 0) < qVal)
         return showNotification("Not enough stock in Shop", "error");
       updateStock(selectedSku, item, -qVal, qVal, targetG);
+      fromLoc = "Shop";
+      toLoc = targetG;
+    }
+    // Record in history
+    if (setTransactions && currentUser) {
+      const attrStr = Object.entries(item.attributes || {})
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(", ");
+      setTransactions((prev) => [
+        {
+          id: Date.now(),
+          type: "transfer",
+          biltyNo: undefined,
+          businessId: activeBusinessId,
+          date: new Date().toISOString().split("T")[0],
+          user: currentUser.username,
+          itemName: item.itemName,
+          category: item.category,
+          itemsCount: qVal,
+          fromLocation: fromLoc,
+          toLocation: toLoc,
+          transferredBy: currentUser.username,
+          subCategory: attrStr || undefined,
+          notes: `${item.itemName} · ${qVal} pcs · ${fromLoc} → ${toLoc}`,
+        },
+        ...prev,
+      ]);
     }
     showNotification("Transfer Success!");
     setQty("");
@@ -1999,23 +2672,50 @@ function TransferTab({
           />
           {search && !selectedSku && (
             <div className="absolute z-10 w-full bg-white border mt-2 rounded-2xl shadow-2xl divide-y overflow-hidden">
-              {filteredSkus.map((s) => (
-                <button
-                  type="button"
-                  key={s}
-                  onClick={() => {
-                    setSelectedSku(s);
-                    setSearch(inventory[s].itemName);
-                  }}
-                  className="w-full text-left p-4 hover:bg-purple-50 cursor-pointer transition-colors"
-                >
-                  <p className="font-bold text-sm">{inventory[s].itemName}</p>
-                  <p className="text-[10px] font-black text-gray-400 uppercase mt-1">
-                    Shop: {inventory[s].shop} | Godown:{" "}
-                    {getTotalGodownStock(inventory[s])}
-                  </p>
-                </button>
-              ))}
+              {filteredSkus.map((s) => {
+                const inv = inventory[s];
+                const attrs = Object.entries(inv.attributes || {});
+                return (
+                  <button
+                    type="button"
+                    key={s}
+                    onClick={() => {
+                      setSelectedSku(s);
+                      setSearch(inv.itemName);
+                    }}
+                    className="w-full text-left p-4 hover:bg-purple-50 cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-bold text-sm">{inv.itemName}</p>
+                        <p className="text-[10px] font-black text-gray-400 uppercase mt-0.5">
+                          {inv.category}
+                        </p>
+                        {attrs.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {attrs.map(([k, v]) => (
+                              <span
+                                key={k}
+                                className="bg-purple-50 text-purple-700 text-[9px] font-black px-1.5 py-0.5 rounded uppercase"
+                              >
+                                {k}: {v}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[10px] font-black text-amber-600 uppercase">
+                          Godown: {getTotalGodownStock(inv)}
+                        </p>
+                        <p className="text-[10px] font-black text-blue-600 uppercase">
+                          Shop: {inv.shop}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -2042,6 +2742,30 @@ function TransferTab({
                 </div>
               </div>
             )}
+            {/* Per-Godown Stock Breakdown */}
+            {(() => {
+              const godownEntries = Object.entries(
+                inventory[selectedSku]?.godowns || {},
+              ).filter(([, v]) => Number(v) > 0);
+              if (godownEntries.length === 0) return null;
+              return (
+                <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100">
+                  <p className="text-[10px] font-black uppercase text-amber-800 mb-2">
+                    Stock by Godown
+                  </p>
+                  <div className="flex flex-wrap gap-3">
+                    {godownEntries.map(([g, v]) => (
+                      <span
+                        key={g}
+                        className="bg-white border border-amber-200 text-amber-800 px-3 py-1.5 rounded-xl text-xs font-black"
+                      >
+                        {g}: <span className="text-amber-600">{v}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 bg-purple-50/50 p-6 rounded-3xl border border-purple-100">
               <div>
                 <p className="text-[10px] font-black uppercase text-purple-900 ml-1">
@@ -2092,6 +2816,7 @@ function HistoryTab({
   setConfirmDialog,
   setTransactions,
   activeBusinessId,
+  currentUser,
 }: {
   transactions: Transaction[];
   setConfirmDialog: (
@@ -2099,6 +2824,7 @@ function HistoryTab({
   ) => void;
   setTransactions: React.Dispatch<React.SetStateAction<Transaction[]>>;
   activeBusinessId: string;
+  currentUser: AppUser;
 }) {
   const [search, setSearch] = useState("");
   const [auditReport, setAuditReport] = useState<string | null>(null);
@@ -2106,6 +2832,17 @@ function HistoryTab({
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+
+  const toggleRow = (id: number) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   let filtered = transactions.filter((t) => {
     if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
@@ -2237,53 +2974,322 @@ function HistoryTab({
             </p>
           </div>
         ) : (
-          filtered.map((t) => (
-            <div
-              key={t.id}
-              className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm flex flex-col md:flex-row justify-between md:items-center gap-4 hover:shadow-md transition-shadow"
-            >
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-[9px] font-black bg-blue-600 text-white px-3 py-1 rounded-full uppercase tracking-widest shadow-sm">
-                    {t.type}
-                  </span>
-                  <span className="font-black text-gray-900 uppercase text-lg tracking-tight">
-                    {t.biltyNo}
-                  </span>
+          filtered.map((t) => {
+            const isTransfer = t.type === "transfer";
+            const isExpanded = expandedRows.has(t.id);
+            return (
+              <div
+                key={t.id}
+                className={`bg-white rounded-[2rem] border shadow-sm hover:shadow-md transition-shadow ${isTransfer ? "border-purple-100" : "border-gray-100"}`}
+              >
+                <div className="p-6 flex flex-col md:flex-row justify-between md:items-start gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className={`text-[9px] font-black px-3 py-1 rounded-full uppercase tracking-widest shadow-sm ${isTransfer ? "bg-purple-600 text-white" : "bg-blue-600 text-white"}`}
+                      >
+                        {isTransfer ? "Transfer" : t.type}
+                      </span>
+                      {t.biltyNo && (
+                        <span className="font-black text-gray-900 uppercase text-lg tracking-tight">
+                          {t.biltyNo}
+                        </span>
+                      )}
+                      {isTransfer && t.itemName && (
+                        <span className="font-black text-gray-800 text-sm tracking-tight">
+                          {t.itemName}
+                        </span>
+                      )}
+                    </div>
+                    {isTransfer ? (
+                      <div className="text-[10px] font-bold text-gray-500 uppercase flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                        <span>
+                          By:{" "}
+                          <b className="text-gray-800">
+                            {t.transferredBy || t.user || "-"}
+                          </b>
+                        </span>
+                        {t.fromLocation && t.toLocation && (
+                          <span>
+                            Route:{" "}
+                            <b className="text-purple-700">
+                              {t.fromLocation} → {t.toLocation}
+                            </b>
+                          </span>
+                        )}
+                        {t.subCategory && (
+                          <span>
+                            Specs:{" "}
+                            <b className="text-gray-800">{t.subCategory}</b>
+                          </span>
+                        )}
+                        {(t.itemsCount ?? 0) > 0 && (
+                          <span>
+                            Qty:{" "}
+                            <b className="text-gray-800">{t.itemsCount} pcs</b>
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-bold text-gray-500 uppercase flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                        <span>
+                          By: <b className="text-gray-800">{t.user || "-"}</b>
+                        </span>
+                        <span>
+                          Transport:{" "}
+                          <b className="text-gray-800">
+                            {t.transportName || "-"}
+                          </b>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {/* Right section - date + actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div
+                      className={`text-right p-3 rounded-2xl border ${isTransfer ? "bg-purple-50 border-purple-100" : "bg-gray-50 border-gray-100"}`}
+                    >
+                      <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                        {t.date?.split("T")[0] || t.date}
+                      </p>
+                      {!isTransfer && (t.itemsCount ?? 0) > 0 && (
+                        <p className="text-xs font-black text-blue-600 mt-1">
+                          {t.itemsCount} Items
+                        </p>
+                      )}
+                      {isTransfer && (t.itemsCount ?? 0) > 0 && (
+                        <p className="text-xs font-black text-purple-600 mt-1">
+                          {t.itemsCount} pcs
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleRow(t.id)}
+                      className="p-2 bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors text-gray-500"
+                      title={isExpanded ? "Collapse" : "Expand details"}
+                    >
+                      {isExpanded ? (
+                        <ChevronUp size={16} />
+                      ) : (
+                        <ChevronDown size={16} />
+                      )}
+                    </button>
+                    {currentUser.role === "admin" &&
+                      (t.type === "INWARD" || t.type === "DIRECT_STOCK") && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingTx({ ...t })}
+                          className="p-2 bg-blue-50 hover:bg-blue-100 rounded-xl transition-colors text-blue-500"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                      )}
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(t.id)}
+                      className="text-red-400 p-2 hover:bg-red-50 rounded-xl transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
-                <div className="text-[10px] font-bold text-gray-500 uppercase flex flex-wrap gap-x-4 gap-y-1 mt-1">
-                  <span>
-                    By: <b className="text-gray-800">{t.user || "-"}</b>
-                  </span>
-                  <span>
-                    Transport:{" "}
-                    <b className="text-gray-800">{t.transportName || "-"}</b>
-                  </span>
-                </div>
+                {isExpanded && (
+                  <div className="px-6 pb-6 border-t border-gray-100 pt-4 bg-gray-50/60 rounded-b-[2rem]">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-[10px] font-bold uppercase">
+                      {t.biltyNo && (
+                        <div>
+                          <p className="text-gray-400">Bilty No</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.biltyNo}
+                          </p>
+                        </div>
+                      )}
+                      {t.itemName && (
+                        <div>
+                          <p className="text-gray-400">Item</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.itemName}
+                          </p>
+                        </div>
+                      )}
+                      {t.category && (
+                        <div>
+                          <p className="text-gray-400">Category</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.category}
+                          </p>
+                        </div>
+                      )}
+                      {t.subCategory && (
+                        <div>
+                          <p className="text-gray-400">Sub-Category</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.subCategory}
+                          </p>
+                        </div>
+                      )}
+                      {t.fromLocation && (
+                        <div>
+                          <p className="text-gray-400">From</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.fromLocation}
+                          </p>
+                        </div>
+                      )}
+                      {t.toLocation && (
+                        <div>
+                          <p className="text-gray-400">To</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.toLocation}
+                          </p>
+                        </div>
+                      )}
+                      {t.transportName && (
+                        <div>
+                          <p className="text-gray-400">Transport</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.transportName}
+                          </p>
+                        </div>
+                      )}
+                      {t.itemsCount !== undefined && (
+                        <div>
+                          <p className="text-gray-400">Qty</p>
+                          <p className="text-gray-800 font-black text-sm">
+                            {t.itemsCount}
+                          </p>
+                        </div>
+                      )}
+                      {(t.transferredBy || t.user) && (
+                        <div>
+                          <p className="text-gray-400">By</p>
+                          <p className="text-gray-800 font-black text-sm normal-case">
+                            {t.transferredBy || t.user}
+                          </p>
+                        </div>
+                      )}
+                      {t.notes && (
+                        <div className="col-span-2 sm:col-span-3">
+                          <p className="text-gray-400">Notes</p>
+                          <p className="text-gray-700 font-bold text-xs normal-case mt-1">
+                            {t.notes}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-              <div className="flex gap-4 items-center">
-                <div className="text-right bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                    {t.date}
-                  </p>
-                  {(t.itemsCount ?? 0) > 0 && (
-                    <p className="text-sm font-black text-blue-600 mt-1">
-                      {t.itemsCount} Items Added
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(t.id)}
-                  className="text-red-400 p-2 hover:bg-red-50 rounded-xl transition-colors"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
+
+      {editingTx && (
+        <div className="fixed inset-0 bg-gray-900/60 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-black text-gray-800 uppercase text-sm tracking-wider">
+                Edit Entry
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingTx(null)}
+                className="p-2 bg-gray-100 rounded-full"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-4">
+              {(
+                [
+                  { label: "Bilty No", key: "biltyNo" },
+                  { label: "Item Name", key: "itemName" },
+                  { label: "Category", key: "category" },
+                  { label: "Transport", key: "transportName" },
+                  { label: "Opened By / User", key: "user" },
+                  { label: "Notes", key: "notes" },
+                  { label: "From Location", key: "fromLocation" },
+                  { label: "To Location", key: "toLocation" },
+                ] as const
+              ).map(({ label, key }) => (
+                <div key={key}>
+                  <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                    {label}
+                  </p>
+                  <input
+                    type="text"
+                    value={
+                      (editingTx[key as keyof Transaction] as string) || ""
+                    }
+                    onChange={(e) =>
+                      setEditingTx({
+                        ...editingTx,
+                        [key]: e.target.value,
+                      } as Transaction)
+                    }
+                    className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ))}
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                  Qty Count
+                </p>
+                <input
+                  type="number"
+                  value={editingTx.itemsCount ?? ""}
+                  onChange={(e) =>
+                    setEditingTx({
+                      ...editingTx,
+                      itemsCount:
+                        e.target.value === ""
+                          ? undefined
+                          : Number(e.target.value),
+                    })
+                  }
+                  className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                  Date
+                </p>
+                <input
+                  type="date"
+                  value={editingTx.date?.split("T")[0] || ""}
+                  onChange={(e) =>
+                    setEditingTx({ ...editingTx, date: e.target.value })
+                  }
+                  className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                type="button"
+                onClick={() => setEditingTx(null)}
+                className="flex-1 bg-gray-100 text-gray-600 font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTransactions((prev) =>
+                    prev.map((tx) => (tx.id === editingTx.id ? editingTx : tx)),
+                  );
+                  setEditingTx(null);
+                }}
+                className="flex-1 bg-blue-600 text-white font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest shadow-lg"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3041,6 +4047,7 @@ function SettingsTab({
             "tabnames",
             "users",
             "columns",
+            "ai",
             "data",
           ] as const
         ).map((sub) => (
@@ -3064,7 +4071,9 @@ function SettingsTab({
                         ? "Logins"
                         : sub === "columns"
                           ? "Forms"
-                          : "System Data"}
+                          : sub === "ai"
+                            ? "AI Settings"
+                            : "System Data"}
           </button>
         ))}
       </div>
@@ -3960,6 +4969,8 @@ function SettingsTab({
         </div>
       )}
 
+      {activeSub === "ai" && <AISettingsPanel />}
+
       {activeSub === "data" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white p-10 rounded-[3rem] border shadow-sm flex flex-col items-center text-center gap-4">
@@ -4514,6 +5525,8 @@ export default function App() {
             setConfirmDialog={setConfirmDialog}
             activeBusinessId={activeBusinessId}
             allTransitGoods={transitGoods}
+            categories={categories}
+            transportTracking={transportTracking}
           />
         )}
         {activeTab === "warehouse" && currentUser.role !== "supplier" && (
@@ -4528,10 +5541,11 @@ export default function App() {
             setConfirmDialog={setConfirmDialog}
             activeBusinessId={activeBusinessId}
             transportTracking={transportTracking}
-            allBiltyNos={[
-              ...transitGoods.map((g) => g.biltyNo),
-              ...pendingParcels.map((p) => p.biltyNo),
-            ]}
+            categories={categories}
+            transitGoods={transitGoods}
+            existingQueueBiltyNos={pendingParcels
+              .filter((p) => !p.businessId || p.businessId === activeBusinessId)
+              .map((p) => p.biltyNo)}
           />
         )}
         {activeTab === "inward" && currentUser.role !== "supplier" && (
@@ -4553,6 +5567,8 @@ export default function App() {
             biltyPrefixes={biltyPrefixes}
             customColumns={customColumns.inward}
             activeBusinessId={activeBusinessId}
+            transactions={transactions}
+            setInventory={setInventory}
           />
         )}
         {activeTab === "opening" && currentUser.role === "admin" && (
@@ -4574,6 +5590,8 @@ export default function App() {
             showNotification={showNotification}
             godowns={godowns}
             activeBusinessId={activeBusinessId}
+            setTransactions={setTransactions}
+            currentUser={currentUser}
           />
         )}
         {activeTab === "history" && currentUser.role !== "supplier" && (
@@ -4582,6 +5600,7 @@ export default function App() {
             setConfirmDialog={setConfirmDialog}
             setTransactions={setTransactions}
             activeBusinessId={activeBusinessId}
+            currentUser={currentUser}
           />
         )}
         {activeTab === "settings" && currentUser.role === "admin" && (
