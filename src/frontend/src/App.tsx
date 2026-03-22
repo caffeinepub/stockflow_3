@@ -106,6 +106,17 @@ interface Transaction {
   toLocation?: string;
   transferredBy?: string;
   subCategory?: string;
+  totalQtyInBale?: number;
+  baleItemsList?: {
+    itemName: string;
+    category: string;
+    attributes: Record<string, string>;
+    qty: number;
+    shopQty?: number;
+    godownQuants?: Record<string, number>;
+    saleRate?: number;
+    purchaseRate?: number;
+  }[];
 }
 interface InwardRecord {
   id: number;
@@ -543,6 +554,8 @@ function TransitTab({
   allTransitGoods: _allTransitGoods,
   categories,
   transportTracking,
+  setMoveToQueueData,
+  setActiveTabFromTransit,
 }: {
   transitGoods: TransitRecord[];
   setTransitGoods: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
@@ -557,6 +570,8 @@ function TransitTab({
   allTransitGoods?: TransitRecord[];
   categories?: Category[];
   transportTracking?: Record<string, string>;
+  setMoveToQueueData?: (d: TransitRecord | null) => void;
+  setActiveTabFromTransit?: (t: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
@@ -959,6 +974,18 @@ function TransitTab({
                       </a>
                     ) : null;
                   })()}
+                  {currentUser.role !== "supplier" && setMoveToQueueData && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoveToQueueData(item);
+                        setActiveTabFromTransit?.("warehouse");
+                      }}
+                      className="bg-amber-100 text-amber-700 px-3 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-amber-200 transition-colors"
+                    >
+                      → Queue
+                    </button>
+                  )}
                   {currentUser.role !== "supplier" && (
                     <button
                       type="button"
@@ -1031,6 +1058,8 @@ function WarehouseTab({
   setTransitGoods,
   categories,
   inventory,
+  moveToQueueData,
+  clearMoveToQueueData,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -1049,6 +1078,8 @@ function WarehouseTab({
   setTransitGoods?: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
   categories?: Category[];
   inventory?: Record<string, InventoryItem>;
+  moveToQueueData?: TransitRecord | null;
+  clearMoveToQueueData?: () => void;
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1096,6 +1127,39 @@ function WarehouseTab({
       setBaleRows([]);
     }
   }, [biltyNumber, biltyPrefix, form.packages]);
+
+  // Auto-fill from moveToQueueData when "Move to Queue" is clicked from Transit
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally only runs on moveToQueueData
+  useEffect(() => {
+    if (!moveToQueueData) return;
+    const biltyStr = moveToQueueData.biltyNo || "";
+    const dashIdx = biltyStr.lastIndexOf("-");
+    if (dashIdx > 0) {
+      const prefix = biltyStr.slice(0, dashIdx);
+      const num = biltyStr.slice(dashIdx + 1);
+      if (biltyPrefixes.includes(prefix)) {
+        setBiltyPrefix(prefix);
+        setBiltyNumber(num);
+      } else {
+        setBiltyPrefix("0");
+        setBiltyNumber(biltyStr);
+      }
+    } else {
+      setBiltyPrefix("0");
+      setBiltyNumber(biltyStr);
+    }
+    setForm((prev) => ({
+      ...prev,
+      transportName: moveToQueueData.transportName || prev.transportName,
+      supplier: moveToQueueData.supplierName || prev.supplier,
+      itemCategory:
+        moveToQueueData.itemCategory ||
+        moveToQueueData.category ||
+        prev.itemCategory,
+      itemName: moveToQueueData.itemName || prev.itemName,
+    }));
+    clearMoveToQueueData?.();
+  }, [moveToQueueData]);
 
   // Auto-fill from Transit when bilty matches
   // biome-ignore lint/correctness/useExhaustiveDependencies: only run on bilty change
@@ -1780,6 +1844,37 @@ function InwardTab({
   const [_filterName, _setFilterName] = useState("");
   const [queueBiltySearch, setQueueBiltySearch] = useState("");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
+  const [inwardPackages, setInwardPackages] = useState("1");
+  const [perBaleData, setPerBaleData] = useState<
+    {
+      label: string;
+      items: BaleItem[];
+      totalQty: string;
+      received: boolean;
+      notReceivedTarget: "transit" | "queue";
+    }[]
+  >([]);
+  const [activeBaleIdx, setActiveBaleIdx] = useState(0);
+
+  useEffect(() => {
+    const bNo =
+      biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
+    const pkgCount = Number(inwardPackages) || 1;
+    if (biltyNumber && pkgCount > 1) {
+      setPerBaleData(
+        Array.from({ length: pkgCount }, (_, i) => ({
+          label: `${bNo}X${pkgCount}(${i + 1})`,
+          items: [] as BaleItem[],
+          totalQty: "",
+          received: true,
+          notReceivedTarget: "transit" as const,
+        })),
+      );
+      setActiveBaleIdx(0);
+    } else {
+      setPerBaleData([]);
+    }
+  }, [biltyNumber, biltyPrefix, inwardPackages]);
 
   const handleLookup = (pPrefix: string, pNumber: string) => {
     const bNo = pPrefix === "0" ? pNumber : `${pPrefix}-${pNumber}`;
@@ -1881,6 +1976,23 @@ function InwardTab({
         return;
       }
     }
+    // Validate totalQty if set
+    if (totalQty) {
+      const savedTotal = baleItems.reduce(
+        (sum, i) =>
+          sum +
+          (Number(i.shopQty) || 0) +
+          Object.values(i.godownQuants).reduce((a, b) => a + Number(b || 0), 0),
+        0,
+      );
+      if (savedTotal !== Number(totalQty)) {
+        showNotification(
+          `Total qty mismatch: distributed ${savedTotal} but bale total is ${totalQty}. Please match before saving.`,
+          "error",
+        );
+        return;
+      }
+    }
     // Auto-create new inventory items typed in combo box
     for (const item of baleItems) {
       if (item.itemName && item.category) {
@@ -1960,7 +2072,36 @@ function InwardTab({
         transportName: isDirectEntry
           ? "Direct Entry"
           : (matchedDetails as TransitRecord)?.transportName || "",
-        itemsCount: baleItems.length,
+        itemsCount: totalQty
+          ? Number(totalQty)
+          : baleItems.reduce(
+              (sum, i) =>
+                sum +
+                (Number(i.shopQty) || 0) +
+                Object.values(i.godownQuants).reduce(
+                  (a, b) => a + Number(b || 0),
+                  0,
+                ),
+              0,
+            ),
+        totalQtyInBale: totalQty ? Number(totalQty) : undefined,
+        baleItemsList: baleItems.map((i) => ({
+          itemName: i.itemName,
+          category: i.category,
+          attributes: { ...i.attributes },
+          shopQty: Number(i.shopQty) || 0,
+          godownQuants: Object.fromEntries(
+            Object.entries(i.godownQuants).map(([g, q]) => [g, Number(q) || 0]),
+          ),
+          saleRate: Number(i.saleRate) || 0,
+          purchaseRate: Number(i.purchaseRate) || 0,
+          qty:
+            (Number(i.shopQty) || 0) +
+            Object.values(i.godownQuants).reduce(
+              (a, b) => a + Number(b || 0),
+              0,
+            ),
+        })),
       },
       ...prev,
     ]);
@@ -2230,7 +2371,7 @@ function InwardTab({
           </div>
         ) : (
           <>
-            <div className="flex gap-2 items-end mt-2">
+            <div className="flex gap-2 items-end mt-2 flex-wrap">
               <BiltyInput
                 prefixOptions={biltyPrefixes}
                 prefix={biltyPrefix}
@@ -2239,6 +2380,18 @@ function InwardTab({
                 setNumber={setBiltyNumber}
                 onSearch={handleLookup}
               />
+              <div className="min-w-[120px]">
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+                  Packages
+                </p>
+                <input
+                  type="number"
+                  min="1"
+                  value={inwardPackages}
+                  onChange={(e) => setInwardPackages(e.target.value || "1")}
+                  className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
             </div>
             {matchedDetails && (
               <div className="bg-green-50 text-green-700 p-3 rounded-xl border border-green-200 text-xs font-bold mt-2">
@@ -2284,6 +2437,529 @@ function InwardTab({
           </>
         )}
       </div>
+
+      {/* Multi-Bale Section when packages > 1 */}
+      {Number(inwardPackages) > 1 && perBaleData.length > 0 && (
+        <div className="bg-white rounded-[2rem] border border-blue-100 shadow-xl overflow-hidden animate-fade-in-down">
+          <div className="bg-blue-700 text-white px-6 py-4 flex items-center justify-between">
+            <h3 className="font-black uppercase tracking-widest text-xs">
+              Multi-Bale Processing ({perBaleData.length} Bales)
+            </h3>
+          </div>
+          {/* Bale Tabs */}
+          <div className="flex overflow-x-auto scrollbar-hide border-b bg-gray-50">
+            {perBaleData.map((bale, idx) => (
+              <button
+                key={bale.label}
+                type="button"
+                onClick={() => {
+                  setActiveBaleIdx(idx);
+                  setItemForm((prev) => ({
+                    ...prev,
+                    itemName: "",
+                    shopQty: "",
+                    godownQuants: {},
+                    attributes: {},
+                  }));
+                }}
+                className={`px-4 py-3 text-[10px] font-black uppercase shrink-0 transition-colors border-r last:border-r-0 ${
+                  activeBaleIdx === idx
+                    ? "bg-blue-600 text-white"
+                    : bale.received
+                      ? "bg-white text-gray-600 hover:bg-blue-50"
+                      : "bg-orange-50 text-orange-600 hover:bg-orange-100"
+                }`}
+              >
+                {bale.label.split("(").pop()?.replace(")", "") || idx + 1}
+                {bale.items.length > 0 && (
+                  <span className="ml-1 bg-white/30 px-1 rounded-full">
+                    {bale.items.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          {/* Active Bale */}
+          {(() => {
+            const bale = perBaleData[activeBaleIdx];
+            if (!bale) return null;
+            return (
+              <div className="p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-black uppercase text-gray-400">
+                      Bale Label
+                    </p>
+                    <h4 className="font-black text-lg text-gray-900">
+                      {bale.label}
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black uppercase text-gray-400">
+                      Status:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated = [...perBaleData];
+                        updated[activeBaleIdx] = {
+                          ...updated[activeBaleIdx],
+                          received: !bale.received,
+                        };
+                        setPerBaleData(updated);
+                      }}
+                      className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${
+                        bale.received
+                          ? "bg-green-100 text-green-700 border border-green-300"
+                          : "bg-orange-100 text-orange-700 border border-orange-300"
+                      }`}
+                    >
+                      {bale.received ? "✓ Received" : "⏳ Not Received"}
+                    </button>
+                  </div>
+                </div>
+                {!bale.received && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 space-y-2">
+                    <p className="text-[10px] font-black uppercase text-orange-800">
+                      Save undelivered bale to:
+                    </p>
+                    <div className="flex gap-3">
+                      {(["transit", "queue"] as const).map((loc) => (
+                        <button
+                          key={loc}
+                          type="button"
+                          onClick={() => {
+                            const updated = [...perBaleData];
+                            updated[activeBaleIdx] = {
+                              ...updated[activeBaleIdx],
+                              notReceivedTarget: loc,
+                            };
+                            setPerBaleData(updated);
+                          }}
+                          className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase border ${
+                            bale.notReceivedTarget === loc
+                              ? loc === "transit"
+                                ? "bg-indigo-600 text-white border-indigo-600"
+                                : "bg-amber-600 text-white border-amber-600"
+                              : "bg-white text-gray-600 border-gray-300"
+                          }`}
+                        >
+                          {loc === "transit" ? "→ Transit" : "→ Queue"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {bale.received && (
+                  <>
+                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+                      <p className="text-[10px] font-black uppercase text-blue-800 ml-1 mb-2">
+                        Total Qty in this Bale
+                      </p>
+                      <input
+                        type="number"
+                        value={bale.totalQty}
+                        onChange={(e) => {
+                          const updated = [...perBaleData];
+                          updated[activeBaleIdx] = {
+                            ...updated[activeBaleIdx],
+                            totalQty: e.target.value,
+                          };
+                          setPerBaleData(updated);
+                        }}
+                        placeholder="Enter total qty"
+                        className="w-full border border-blue-300 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                      {bale.totalQty &&
+                        (() => {
+                          const dist = bale.items.reduce(
+                            (s, i) =>
+                              s +
+                              (Number(i.shopQty) || 0) +
+                              Object.values(i.godownQuants).reduce(
+                                (a, b) => a + Number(b || 0),
+                                0,
+                              ),
+                            0,
+                          );
+                          const exp = Number(bale.totalQty);
+                          return (
+                            <p
+                              className={`text-[10px] font-black mt-2 ${dist === exp ? "text-green-700" : "text-orange-600"}`}
+                            >
+                              {dist === exp
+                                ? `✓ ${dist}/${exp}`
+                                : `⚠ ${dist}/${exp} — add items to match`}
+                            </p>
+                          );
+                        })()}
+                    </div>
+                    {/* Items in this bale */}
+                    {bale.items.length > 0 && (
+                      <div className="bg-gray-50 rounded-2xl border overflow-hidden">
+                        <div className="bg-gray-800 text-white px-4 py-2 flex justify-between items-center">
+                          <span className="text-[10px] font-black uppercase">
+                            Items ({bale.items.length})
+                          </span>
+                        </div>
+                        <table className="w-full text-xs">
+                          <tbody className="divide-y">
+                            {bale.items.map((item, iIdx) => (
+                              <tr key={item.id}>
+                                <td className="px-4 py-3 font-bold">
+                                  {item.itemName}{" "}
+                                  <span className="text-gray-400">
+                                    ({item.category})
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 font-black text-center">
+                                  {(Number(item.shopQty) || 0) +
+                                    Object.values(item.godownQuants).reduce(
+                                      (a, b) => a + Number(b || 0),
+                                      0,
+                                    )}
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = [...perBaleData];
+                                      updated[activeBaleIdx] = {
+                                        ...updated[activeBaleIdx],
+                                        items: updated[
+                                          activeBaleIdx
+                                        ].items.filter((_, i) => i !== iIdx),
+                                      };
+                                      setPerBaleData(updated);
+                                    }}
+                                    className="text-red-400 p-1.5 bg-red-50 rounded-lg"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {/* Add item form for this bale (reuse itemForm state) */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Add current itemForm to this bale
+                        if (!itemForm.itemName || !itemForm.category) {
+                          showNotification(
+                            "Fill category and item name first",
+                            "error",
+                          );
+                          return;
+                        }
+                        const sku = generateSku(
+                          itemForm.category,
+                          itemForm.itemName,
+                          itemForm.attributes,
+                          itemForm.saleRate,
+                          activeBusinessId,
+                        );
+                        const newItem: BaleItem = {
+                          ...itemForm,
+                          sku,
+                          id: Date.now(),
+                        };
+                        const updated = [...perBaleData];
+                        updated[activeBaleIdx] = {
+                          ...updated[activeBaleIdx],
+                          items: [...updated[activeBaleIdx].items, newItem],
+                        };
+                        setPerBaleData(updated);
+                        setItemForm({
+                          ...itemForm,
+                          itemName: "",
+                          shopQty: "",
+                          godownQuants: {},
+                          customData: {},
+                        });
+                        showNotification("Item added to bale", "success");
+                      }}
+                      className="w-full border-2 border-dashed border-blue-300 text-blue-600 font-black text-[10px] uppercase py-3 rounded-2xl hover:bg-blue-50"
+                    >
+                      + Add Current Form Item to Bale {activeBaleIdx + 1}
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+          {/* Save All Bales Button */}
+          <div className="px-6 pb-6">
+            <button
+              type="button"
+              onClick={() => {
+                // Validate all received bales
+                for (const bale of perBaleData) {
+                  if (!bale.received) continue;
+                  if (bale.items.length === 0) {
+                    showNotification(
+                      `Bale ${bale.label} has no items. Add items or mark as not received.`,
+                      "error",
+                    );
+                    return;
+                  }
+                  if (bale.totalQty) {
+                    const dist = bale.items.reduce(
+                      (s, i) =>
+                        s +
+                        (Number(i.shopQty) || 0) +
+                        Object.values(i.godownQuants).reduce(
+                          (a, b) => a + Number(b || 0),
+                          0,
+                        ),
+                      0,
+                    );
+                    if (dist !== Number(bale.totalQty)) {
+                      showNotification(
+                        `Bale ${bale.label}: qty mismatch (${dist} vs ${bale.totalQty})`,
+                        "error",
+                      );
+                      return;
+                    }
+                  }
+                }
+                // Check for duplicate bilties
+                for (const bale of perBaleData) {
+                  if (!bale.received) continue;
+                  const existing = transactions.find(
+                    (t) =>
+                      t.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                      (!t.businessId || t.businessId === activeBusinessId),
+                  );
+                  if (existing && currentUser.role !== "admin") {
+                    showNotification(
+                      `Bilty ${bale.label} already processed. Admin override required.`,
+                      "error",
+                    );
+                    return;
+                  }
+                }
+                // Process each bale
+                for (const bale of perBaleData) {
+                  if (bale.received) {
+                    // Auto-create inventory items
+                    for (const itm of bale.items) {
+                      if (itm.itemName && itm.category) {
+                        const exists = Object.values(inventory).some(
+                          (inv) =>
+                            (!inv.businessId ||
+                              inv.businessId === activeBusinessId) &&
+                            inv.category === itm.category &&
+                            inv.itemName.toLowerCase() ===
+                              itm.itemName.toLowerCase(),
+                        );
+                        if (!exists) {
+                          const newSku = generateSku(
+                            itm.category,
+                            itm.itemName,
+                            {},
+                            "0",
+                            activeBusinessId,
+                          );
+                          setInventory((prev) => ({
+                            ...prev,
+                            [newSku]: {
+                              sku: newSku,
+                              category: itm.category,
+                              itemName: itm.itemName,
+                              attributes: {},
+                              shop: 0,
+                              godowns: {},
+                              saleRate: 0,
+                              purchaseRate: 0,
+                              businessId: activeBusinessId,
+                            },
+                          }));
+                        }
+                      }
+                    }
+                    // Update stock
+                    for (const itm of bale.items) {
+                      if (Number(itm.shopQty) > 0)
+                        updateStock(
+                          itm.sku,
+                          {
+                            ...itm,
+                            saleRate: Number(itm.saleRate),
+                            purchaseRate: Number(itm.purchaseRate),
+                          },
+                          Number(itm.shopQty),
+                          0,
+                          "Main Godown",
+                        );
+                      for (const [g, q] of Object.entries(itm.godownQuants)) {
+                        if (Number(q) > 0)
+                          updateStock(
+                            itm.sku,
+                            {
+                              ...itm,
+                              saleRate: Number(itm.saleRate),
+                              purchaseRate: Number(itm.purchaseRate),
+                            },
+                            0,
+                            Number(q),
+                            g,
+                          );
+                      }
+                    }
+                    // Create transaction
+                    setTransactions((prev) => [
+                      {
+                        id: Date.now() + Math.random(),
+                        type: "INWARD",
+                        biltyNo: bale.label,
+                        businessId: activeBusinessId,
+                        date: new Date().toISOString().split("T")[0],
+                        user: currentUser.username,
+                        transportName:
+                          (matchedDetails as TransitRecord)?.transportName ||
+                          "",
+                        itemsCount: bale.totalQty
+                          ? Number(bale.totalQty)
+                          : bale.items.reduce(
+                              (s, i) =>
+                                s +
+                                (Number(i.shopQty) || 0) +
+                                Object.values(i.godownQuants).reduce(
+                                  (a, b) => a + Number(b || 0),
+                                  0,
+                                ),
+                              0,
+                            ),
+                        totalQtyInBale: bale.totalQty
+                          ? Number(bale.totalQty)
+                          : undefined,
+                        baleItemsList: bale.items.map((i) => ({
+                          itemName: i.itemName,
+                          category: i.category,
+                          attributes: { ...i.attributes },
+                          shopQty: Number(i.shopQty) || 0,
+                          godownQuants: Object.fromEntries(
+                            Object.entries(i.godownQuants).map(([g, q]) => [
+                              g,
+                              Number(q) || 0,
+                            ]),
+                          ),
+                          saleRate: Number(i.saleRate) || 0,
+                          purchaseRate: Number(i.purchaseRate) || 0,
+                          qty:
+                            (Number(i.shopQty) || 0) +
+                            Object.values(i.godownQuants).reduce(
+                              (a, b) => a + Number(b || 0),
+                              0,
+                            ),
+                        })),
+                      },
+                      ...prev,
+                    ]);
+                    // Remove from transit/queue
+                    setTransitGoods((prev) =>
+                      prev.filter(
+                        (g) =>
+                          g.biltyNo?.toLowerCase() !== bale.label.toLowerCase(),
+                      ),
+                    );
+                    setPendingParcels((prev) =>
+                      prev.filter(
+                        (p) =>
+                          p.biltyNo?.toLowerCase() !== bale.label.toLowerCase(),
+                      ),
+                    );
+                  } else {
+                    // Not received: check if already in transit or queue
+                    const inTransit = transitGoods.some(
+                      (g) =>
+                        g.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                        (!g.businessId || g.businessId === activeBusinessId),
+                    );
+                    const inQueue = pendingParcels.some(
+                      (p) =>
+                        p.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                        (!p.businessId || p.businessId === activeBusinessId),
+                    );
+                    if (!inTransit && !inQueue) {
+                      if (bale.notReceivedTarget === "transit") {
+                        setTransitGoods((prev) => [
+                          {
+                            id: Date.now() + Math.random(),
+                            biltyNo: bale.label,
+                            transportName:
+                              (matchedDetails as TransitRecord)
+                                ?.transportName || "",
+                            supplierName:
+                              (matchedDetails as PendingParcel)?.supplier || "",
+                            itemName: bale.items[0]?.itemName || "",
+                            itemCategory: bale.items[0]?.category || "",
+                            packages: "1",
+                            date: new Date().toISOString().split("T")[0],
+                            addedBy: currentUser.username,
+                            businessId: activeBusinessId,
+                            customData: {},
+                          },
+                          ...prev,
+                        ]);
+                      } else {
+                        setPendingParcels((prev) => [
+                          {
+                            id: Date.now() + Math.random(),
+                            biltyNo: bale.label,
+                            transportName:
+                              (matchedDetails as TransitRecord)
+                                ?.transportName || "",
+                            packages: "1",
+                            dateReceived: new Date()
+                              .toISOString()
+                              .split("T")[0],
+                            businessId: activeBusinessId,
+                            itemName: bale.items[0]?.itemName || "",
+                            itemCategory: bale.items[0]?.category || "",
+                            customData: {},
+                          },
+                          ...prev,
+                        ]);
+                      }
+                    }
+                    // Record pending in history
+                    setTransactions((prev) => [
+                      {
+                        id: Date.now() + Math.random(),
+                        type: "INWARD_PENDING",
+                        biltyNo: bale.label,
+                        businessId: activeBusinessId,
+                        date: new Date().toISOString().split("T")[0],
+                        user: currentUser.username,
+                        notes: `Not received — saved to ${bale.notReceivedTarget}`,
+                      },
+                      ...prev,
+                    ]);
+                  }
+                }
+                // Clear all
+                setPerBaleData([]);
+                setInwardPackages("1");
+                setBiltyNumber("");
+                setMatchedDetails(null);
+                setOpeningParcel(null);
+                showNotification(
+                  `Processed ${perBaleData.filter((b) => b.received).length} received, ${perBaleData.filter((b) => !b.received).length} pending bales`,
+                  "success",
+                );
+              }}
+              className="w-full bg-blue-700 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-xl hover:bg-blue-800 transition-transform active:scale-95 mt-4"
+            >
+              Save All {perBaleData.length} Bales
+            </button>
+          </div>
+        </div>
+      )}
 
       {showItemForm && (
         <form
@@ -2885,6 +3561,9 @@ function HistoryTab({
   inventory,
   transitGoods,
   pendingParcels,
+  categories,
+  godowns,
+  showNotification,
 }: {
   transactions: Transaction[];
   setConfirmDialog: (
@@ -2896,6 +3575,9 @@ function HistoryTab({
   inventory: Record<string, InventoryItem>;
   transitGoods?: TransitRecord[];
   pendingParcels?: PendingParcel[];
+  categories: Category[];
+  godowns: string[];
+  showNotification: (m: string, t?: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -2915,6 +3597,22 @@ function HistoryTab({
       return next;
     });
   };
+
+  // Aggregate all bilties (from transactions, transit, queue)
+  const allBiltyNos = Array.from(
+    new Set([
+      ...transactions
+        .filter((t) => !t.businessId || t.businessId === activeBusinessId)
+        .filter((t) => t.biltyNo)
+        .map((t) => t.biltyNo as string),
+      ...(transitGoods || [])
+        .filter((g) => !g.businessId || g.businessId === activeBusinessId)
+        .map((g) => g.biltyNo),
+      ...(pendingParcels || [])
+        .filter((p) => !p.businessId || p.businessId === activeBusinessId)
+        .map((p) => p.biltyNo),
+    ]),
+  );
 
   let filtered = transactions.filter((t) => {
     if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
@@ -2963,6 +3661,75 @@ function HistoryTab({
           </div>
         </div>
       </div>
+      {/* All-Source Bilty Status Panel */}
+      {search.length > 2 && (
+        <div className="bg-white border rounded-[2rem] overflow-hidden shadow-sm animate-fade-in-down">
+          <div className="bg-gray-800 text-white px-6 py-3 flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-widest">
+              Bilty Tracker
+            </span>
+            <span className="text-gray-400 text-[10px]">Across all tabs</span>
+          </div>
+          <div className="divide-y max-h-64 overflow-y-auto">
+            {allBiltyNos
+              .filter((b) => b.toLowerCase().includes(search.toLowerCase()))
+              .map((bNo) => {
+                const inTransit = (transitGoods || []).some(
+                  (g) =>
+                    g.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+                    (!g.businessId || g.businessId === activeBusinessId),
+                );
+                const inQueue = (pendingParcels || []).some(
+                  (p) =>
+                    p.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+                    (!p.businessId || p.businessId === activeBusinessId),
+                );
+                const processed = transactions.some(
+                  (t) =>
+                    t.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+                    (!t.businessId || t.businessId === activeBusinessId),
+                );
+                let statusLabel = "Unknown";
+                let statusColor = "bg-gray-100 text-gray-600";
+                if (inTransit) {
+                  statusLabel = "In Transit";
+                  statusColor = "bg-indigo-100 text-indigo-700";
+                } else if (inQueue) {
+                  statusLabel = "In Queue";
+                  statusColor = "bg-amber-100 text-amber-700";
+                } else if (processed) {
+                  statusLabel = "Processed";
+                  statusColor = "bg-green-100 text-green-700";
+                }
+                return (
+                  <button
+                    key={bNo}
+                    type="button"
+                    onClick={() => setSelectedBiltyForHistory(bNo)}
+                    className="w-full text-left px-6 py-3 hover:bg-gray-50 flex items-center justify-between"
+                  >
+                    <span className="font-black text-sm text-gray-900">
+                      {bNo}
+                    </span>
+                    <span
+                      className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${statusColor}`}
+                    >
+                      {statusLabel}
+                    </span>
+                  </button>
+                );
+              })}
+            {allBiltyNos.filter((b) =>
+              b.toLowerCase().includes(search.toLowerCase()),
+            ).length === 0 && (
+              <p className="px-6 py-4 text-xs text-gray-400 font-bold">
+                No bilty found matching "{search}"
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-3 items-center">
         <input
           type="date"
@@ -3228,11 +3995,16 @@ function HistoryTab({
 
       {editingTx && (
         <div className="fixed inset-0 bg-gray-900/60 z-[100] flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="font-black text-gray-800 uppercase text-sm tracking-wider">
-                Edit Entry
-              </h3>
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                  Edit Inward Entry
+                </p>
+                <h3 className="font-black text-gray-900 text-lg uppercase tracking-tight">
+                  {editingTx.biltyNo}
+                </h3>
+              </div>
               <button
                 type="button"
                 onClick={() => setEditingTx(null)}
@@ -3242,75 +4014,362 @@ function HistoryTab({
               </button>
             </div>
             <div className="space-y-4">
-              {(
-                [
-                  { label: "Bilty No", key: "biltyNo" },
-                  { label: "Category", key: "category" },
-                  { label: "Transport", key: "transportName" },
-                  { label: "Opened By / User", key: "user" },
-                  { label: "Notes", key: "notes" },
-                  { label: "From Location", key: "fromLocation" },
-                  { label: "To Location", key: "toLocation" },
-                ] as const
-              ).map(({ label, key }) => (
-                <div key={key}>
+              {/* Header fields */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
                   <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
-                    {label}
+                    Bilty No <span className="text-gray-300">(locked)</span>
                   </p>
                   <input
                     type="text"
-                    value={
-                      (editingTx[key as keyof Transaction] as string) || ""
-                    }
+                    value={editingTx.biltyNo || ""}
+                    readOnly
+                    className="w-full border rounded-xl p-3 font-bold bg-gray-100 text-gray-500 cursor-not-allowed"
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                    Transport
+                  </p>
+                  <input
+                    type="text"
+                    value={editingTx.transportName || ""}
                     onChange={(e) =>
                       setEditingTx({
                         ...editingTx,
-                        [key]: e.target.value,
+                        transportName: e.target.value,
                       } as Transaction)
                     }
                     className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-              ))}
-              <div>
-                <ItemNameCombo
-                  category={editingTx.category || ""}
-                  value={editingTx.itemName || ""}
-                  onChange={(val) =>
-                    setEditingTx({ ...editingTx, itemName: val } as Transaction)
-                  }
-                  inventory={inventory}
-                  activeBusinessId={activeBusinessId}
-                />
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                    Opened By
+                  </p>
+                  <input
+                    type="text"
+                    value={editingTx.user || ""}
+                    onChange={(e) =>
+                      setEditingTx({
+                        ...editingTx,
+                        user: e.target.value,
+                      } as Transaction)
+                    }
+                    className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                    Date
+                  </p>
+                  <input
+                    type="date"
+                    value={editingTx.date?.split("T")[0] || ""}
+                    onChange={(e) =>
+                      setEditingTx({
+                        ...editingTx,
+                        date: e.target.value,
+                      } as Transaction)
+                    }
+                    className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
+                    Total Qty in Bale
+                  </p>
+                  <input
+                    type="number"
+                    value={editingTx.totalQtyInBale ?? ""}
+                    onChange={(e) =>
+                      setEditingTx({
+                        ...editingTx,
+                        totalQtyInBale:
+                          e.target.value === ""
+                            ? undefined
+                            : Number(e.target.value),
+                      } as Transaction)
+                    }
+                    className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
               </div>
+              {/* Bale Items */}
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-500 mb-3 mt-2">
+                  Items in Bale
+                </p>
+                {(editingTx.baleItemsList || []).map((bi, idx) => (
+                  <div
+                    key={`${bi.itemName}-${idx}`}
+                    className="border border-blue-100 rounded-2xl p-4 mb-3 bg-blue-50/40 space-y-3"
+                  >
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] font-black uppercase text-blue-700">
+                        Item {idx + 1}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingTx({
+                            ...editingTx,
+                            baleItemsList: (
+                              editingTx.baleItemsList || []
+                            ).filter((_, i) => i !== idx),
+                          } as Transaction)
+                        }
+                        className="text-red-400 hover:text-red-600 text-[10px] font-black uppercase"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Category
+                        </p>
+                        <select
+                          value={bi.category}
+                          onChange={(e) => {
+                            const updated = [
+                              ...(editingTx.baleItemsList || []),
+                            ];
+                            updated[idx] = {
+                              ...updated[idx],
+                              category: e.target.value,
+                              itemName: "",
+                            };
+                            setEditingTx({
+                              ...editingTx,
+                              baleItemsList: updated,
+                            } as Transaction);
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                        >
+                          <option value="">Select</option>
+                          {categories.map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Item Name
+                        </p>
+                        <ItemNameCombo
+                          category={bi.category}
+                          value={bi.itemName}
+                          onChange={(val) => {
+                            const updated = [
+                              ...(editingTx.baleItemsList || []),
+                            ];
+                            updated[idx] = { ...updated[idx], itemName: val };
+                            setEditingTx({
+                              ...editingTx,
+                              baleItemsList: updated,
+                            } as Transaction);
+                          }}
+                          inventory={inventory}
+                          activeBusinessId={activeBusinessId}
+                        />
+                      </div>
+                    </div>
+                    {/* Attributes */}
+                    {(() => {
+                      const cat = categories.find(
+                        (c) => c.name === bi.category,
+                      );
+                      if (!cat || !cat.fields.length) return null;
+                      return (
+                        <div className="grid grid-cols-2 gap-3">
+                          {cat.fields.map((f) => (
+                            <div key={f.name}>
+                              <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                                {f.name}
+                              </p>
+                              {f.type === "select" ? (
+                                <select
+                                  value={bi.attributes?.[f.name] || ""}
+                                  onChange={(e) => {
+                                    const updated = [
+                                      ...(editingTx.baleItemsList || []),
+                                    ];
+                                    updated[idx] = {
+                                      ...updated[idx],
+                                      attributes: {
+                                        ...(updated[idx].attributes || {}),
+                                        [f.name]: e.target.value,
+                                      },
+                                    };
+                                    setEditingTx({
+                                      ...editingTx,
+                                      baleItemsList: updated,
+                                    } as Transaction);
+                                  }}
+                                  className="w-full border rounded-xl p-3 font-bold bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                                >
+                                  <option value="">Select</option>
+                                  {(f.options || []).map((o) => (
+                                    <option key={o} value={o}>
+                                      {o}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={bi.attributes?.[f.name] || ""}
+                                  onChange={(e) => {
+                                    const updated = [
+                                      ...(editingTx.baleItemsList || []),
+                                    ];
+                                    updated[idx] = {
+                                      ...updated[idx],
+                                      attributes: {
+                                        ...(updated[idx].attributes || {}),
+                                        [f.name]: e.target.value,
+                                      },
+                                    };
+                                    setEditingTx({
+                                      ...editingTx,
+                                      baleItemsList: updated,
+                                    } as Transaction);
+                                  }}
+                                  className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {/* Shop Qty */}
+                    <div>
+                      <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                        Shop Qty
+                      </p>
+                      <input
+                        type="number"
+                        value={bi.shopQty ?? ""}
+                        onChange={(e) => {
+                          const updated = [...(editingTx.baleItemsList || [])];
+                          updated[idx] = {
+                            ...updated[idx],
+                            shopQty: Number(e.target.value) || 0,
+                          };
+                          setEditingTx({
+                            ...editingTx,
+                            baleItemsList: updated,
+                          } as Transaction);
+                        }}
+                        className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    {/* Godown Qtys */}
+                    {godowns.map((g) => (
+                      <div key={g}>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          {g}
+                        </p>
+                        <input
+                          type="number"
+                          value={bi.godownQuants?.[g] ?? ""}
+                          onChange={(e) => {
+                            const updated = [
+                              ...(editingTx.baleItemsList || []),
+                            ];
+                            updated[idx] = {
+                              ...updated[idx],
+                              godownQuants: {
+                                ...(updated[idx].godownQuants || {}),
+                                [g]: Number(e.target.value) || 0,
+                              },
+                            };
+                            setEditingTx({
+                              ...editingTx,
+                              baleItemsList: updated,
+                            } as Transaction);
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    ))}
+                    {/* Per-item total */}
+                    <p className="text-[10px] font-black text-blue-700">
+                      Item Total:{" "}
+                      {(bi.shopQty || 0) +
+                        Object.values(bi.godownQuants || {}).reduce(
+                          (a, b) => a + (b || 0),
+                          0,
+                        )}{" "}
+                      pcs
+                    </p>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setEditingTx({
+                      ...editingTx,
+                      baleItemsList: [
+                        ...(editingTx.baleItemsList || []),
+                        {
+                          itemName: "",
+                          category: "",
+                          attributes: {},
+                          qty: 0,
+                          shopQty: 0,
+                          godownQuants: {},
+                        },
+                      ],
+                    } as Transaction)
+                  }
+                  className="w-full border-2 border-dashed border-blue-300 text-blue-600 font-black text-[10px] uppercase py-3 rounded-2xl hover:bg-blue-50 transition-colors"
+                >
+                  + Add Item
+                </button>
+              </div>
+              {/* Qty validation */}
+              {editingTx.totalQtyInBale &&
+                editingTx.baleItemsList &&
+                editingTx.baleItemsList.length > 0 &&
+                (() => {
+                  const distributed = (editingTx.baleItemsList || []).reduce(
+                    (sum, bi) =>
+                      sum +
+                      (bi.shopQty || 0) +
+                      Object.values(bi.godownQuants || {}).reduce(
+                        (a, b) => a + (b || 0),
+                        0,
+                      ),
+                    0,
+                  );
+                  const expected = editingTx.totalQtyInBale;
+                  return distributed === expected ? (
+                    <p className="text-[10px] font-black text-green-700 bg-green-50 border border-green-200 px-3 py-2 rounded-xl">
+                      ✓ Qty matches: {distributed}/{expected}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] font-black text-orange-700 bg-orange-50 border border-orange-200 px-3 py-2 rounded-xl">
+                      ⚠ Qty mismatch: {distributed}/{expected}
+                    </p>
+                  );
+                })()}
               <div>
                 <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
-                  Qty Count
+                  Notes
                 </p>
                 <input
-                  type="number"
-                  value={editingTx.itemsCount ?? ""}
+                  type="text"
+                  value={editingTx.notes || ""}
                   onChange={(e) =>
                     setEditingTx({
                       ...editingTx,
-                      itemsCount:
-                        e.target.value === ""
-                          ? undefined
-                          : Number(e.target.value),
-                    })
-                  }
-                  className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
-                  Date
-                </p>
-                <input
-                  type="date"
-                  value={editingTx.date?.split("T")[0] || ""}
-                  onChange={(e) =>
-                    setEditingTx({ ...editingTx, date: e.target.value })
+                      notes: e.target.value,
+                    } as Transaction)
                   }
                   className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
                 />
@@ -3327,10 +4386,27 @@ function HistoryTab({
               <button
                 type="button"
                 onClick={() => {
+                  // Recalculate itemsCount from baleItemsList
+                  const updatedTx = {
+                    ...editingTx,
+                    itemsCount:
+                      editingTx.totalQtyInBale ??
+                      (editingTx.baleItemsList || []).reduce(
+                        (sum, bi) =>
+                          sum +
+                          (bi.shopQty || 0) +
+                          Object.values(bi.godownQuants || {}).reduce(
+                            (a, b) => a + (b || 0),
+                            0,
+                          ),
+                        0,
+                      ),
+                  };
                   setTransactions((prev) =>
-                    prev.map((tx) => (tx.id === editingTx.id ? editingTx : tx)),
+                    prev.map((tx) => (tx.id === editingTx.id ? updatedTx : tx)),
                   );
                   setEditingTx(null);
+                  showNotification("Entry updated successfully", "success");
                 }}
                 className="flex-1 bg-blue-600 text-white font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest shadow-lg"
               >
@@ -3341,30 +4417,36 @@ function HistoryTab({
         </div>
       )}
 
-      {/* Bilty Journey Modal */}
+      {/* Bilty Journey Modal - Enhanced Timeline */}
       {selectedBiltyForHistory &&
         (() => {
           const bNo = selectedBiltyForHistory;
+          const baseBno = bNo.replace(/X\d+\(\d+\)$/i, "").toLowerCase();
           const transitEntry = (transitGoods || []).find(
             (g) =>
-              g.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (g.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+                g.biltyNo?.toLowerCase() === baseBno) &&
               (!g.businessId || g.businessId === activeBusinessId),
           );
           const queueEntry = (pendingParcels || []).find(
             (p) =>
-              p.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (p.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+                p.biltyNo?.toLowerCase() === baseBno) &&
               (!p.businessId || p.businessId === activeBusinessId),
           );
-          const inwardEntry = transactions.find(
+          // All inward transactions for this bilty (multi-bale each gets its own tx)
+          const inwardEntries = transactions.filter(
             (t) =>
               t.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
               (t.type === "INWARD" || t.type === "inward") &&
               (!t.businessId || t.businessId === activeBusinessId),
           );
+          const inwardEntry = inwardEntries[0] || null;
           return (
             <div className="fixed inset-0 bg-gray-900/60 z-[100] flex items-center justify-center p-4">
-              <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
-                <div className="flex justify-between items-center mb-6">
+              <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+                {/* Header */}
+                <div className="sticky top-0 bg-white border-b px-6 py-5 flex justify-between items-center rounded-t-[2.5rem] z-10">
                   <div>
                     <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">
                       Bilty Journey
@@ -3381,161 +4463,287 @@ function HistoryTab({
                     <X size={18} />
                   </button>
                 </div>
-                <div className="space-y-4">
-                  {/* Transit Stage */}
-                  <div
-                    className={`p-4 rounded-2xl border ${transitEntry ? "bg-indigo-50 border-indigo-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span
-                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${transitEntry ? "bg-indigo-600 text-white" : "bg-gray-300 text-gray-600"}`}
+                {/* Timeline */}
+                <div className="p-6 space-y-0">
+                  {/* --- TRANSIT CHECKPOINT --- */}
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-black text-xs shadow-md ${transitEntry ? "bg-indigo-600 text-white" : "bg-gray-200 text-gray-400"}`}
                       >
-                        1. Transit
-                      </span>
-                      {transitEntry && (
-                        <span className="text-[10px] font-bold text-indigo-700">
-                          {transitEntry.date}
-                        </span>
-                      )}
+                        1
+                      </div>
+                      <div className="w-0.5 bg-gray-200 flex-1 mt-1 mb-1 min-h-[32px]" />
                     </div>
-                    {transitEntry ? (
-                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
-                        <p>
-                          Added by: <b>{transitEntry.addedBy}</b>
+                    <div
+                      className={`flex-1 mb-4 p-4 rounded-2xl border ${transitEntry ? "bg-indigo-50 border-indigo-200" : "bg-gray-50 border-dashed border-gray-200 opacity-60"}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span
+                          className={`text-[9px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${transitEntry ? "bg-indigo-600 text-white" : "bg-gray-300 text-gray-500"}`}
+                        >
+                          Transit
+                        </span>
+                        {transitEntry?.date && (
+                          <span className="text-[10px] font-bold text-indigo-600">
+                            {transitEntry.date}
+                          </span>
+                        )}
+                      </div>
+                      {transitEntry ? (
+                        <div className="text-[10px] font-bold text-gray-700 space-y-1">
+                          <p>
+                            Added by:{" "}
+                            <b className="text-gray-900">
+                              {transitEntry.addedBy || "—"}
+                            </b>
+                          </p>
+                          {transitEntry.transportName && (
+                            <p>
+                              Transport:{" "}
+                              <b className="text-gray-900">
+                                {transitEntry.transportName}
+                              </b>
+                            </p>
+                          )}
+                          {transitEntry.supplierName && (
+                            <p>
+                              Supplier:{" "}
+                              <b className="text-gray-900">
+                                {transitEntry.supplierName}
+                              </b>
+                            </p>
+                          )}
+                          {transitEntry.itemCategory && (
+                            <p>
+                              Category:{" "}
+                              <b className="text-gray-900">
+                                {transitEntry.itemCategory}
+                              </b>
+                            </p>
+                          )}
+                          {transitEntry.itemName && (
+                            <p>
+                              Item:{" "}
+                              <b className="text-gray-900">
+                                {transitEntry.itemName}
+                              </b>
+                            </p>
+                          )}
+                          {transitEntry.packages &&
+                            Number(transitEntry.packages) > 1 && (
+                              <p>
+                                Packages:{" "}
+                                <b className="text-indigo-700">
+                                  {transitEntry.packages}
+                                </b>
+                              </p>
+                            )}
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-gray-400 font-bold">
+                          Not in Transit
                         </p>
-                        {transitEntry.transportName && (
-                          <p>
-                            Transport: <b>{transitEntry.transportName}</b>
-                          </p>
-                        )}
-                        {transitEntry.supplierName && (
-                          <p>
-                            Supplier: <b>{transitEntry.supplierName}</b>
-                          </p>
-                        )}
-                        {transitEntry.itemName && (
-                          <p>
-                            Item: <b>{transitEntry.itemName}</b>
-                          </p>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-[10px] text-gray-400 font-bold">
-                        No Transit record found
-                      </p>
-                    )}
-                  </div>
-                  {/* Queue Stage */}
-                  <div
-                    className={`p-4 rounded-2xl border ${queueEntry ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span
-                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${queueEntry ? "bg-amber-600 text-white" : "bg-gray-300 text-gray-600"}`}
-                      >
-                        2. Queue
-                      </span>
-                      {queueEntry && (
-                        <span className="text-[10px] font-bold text-amber-700">
-                          {queueEntry.arrivalDate || queueEntry.dateReceived}
-                        </span>
                       )}
                     </div>
-                    {queueEntry ? (
-                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
-                        {queueEntry.supplier && (
-                          <p>
-                            Supplier: <b>{queueEntry.supplier}</b>
-                          </p>
-                        )}
-                        {queueEntry.itemCategory && (
-                          <p>
-                            Category: <b>{queueEntry.itemCategory}</b>
-                          </p>
-                        )}
-                        {queueEntry.itemName && (
-                          <p>
-                            Item: <b>{queueEntry.itemName}</b>
-                          </p>
+                  </div>
+                  {/* --- QUEUE CHECKPOINT --- */}
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-black text-xs shadow-md ${queueEntry ? "bg-amber-500 text-white" : "bg-gray-200 text-gray-400"}`}
+                      >
+                        2
+                      </div>
+                      <div className="w-0.5 bg-gray-200 flex-1 mt-1 mb-1 min-h-[32px]" />
+                    </div>
+                    <div
+                      className={`flex-1 mb-4 p-4 rounded-2xl border ${queueEntry ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-dashed border-gray-200 opacity-60"}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span
+                          className={`text-[9px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${queueEntry ? "bg-amber-500 text-white" : "bg-gray-300 text-gray-500"}`}
+                        >
+                          Arrived / Queue
+                        </span>
+                        {(queueEntry?.arrivalDate ||
+                          queueEntry?.dateReceived) && (
+                          <span className="text-[10px] font-bold text-amber-600">
+                            {queueEntry.arrivalDate || queueEntry.dateReceived}
+                          </span>
                         )}
                       </div>
-                    ) : (
-                      <p className="text-[10px] text-gray-400 font-bold">
-                        No Queue record found
-                      </p>
-                    )}
-                  </div>
-                  {/* Inward Stage */}
-                  <div
-                    className={`p-4 rounded-2xl border ${inwardEntry ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span
-                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${inwardEntry ? "bg-green-600 text-white" : "bg-gray-300 text-gray-600"}`}
-                      >
-                        3. Inward
-                      </span>
-                      {inwardEntry && (
-                        <span className="text-[10px] font-bold text-green-700">
-                          {inwardEntry.date}
-                        </span>
-                      )}
-                    </div>
-                    {inwardEntry ? (
-                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
-                        <p>
-                          Opened by: <b>{inwardEntry.user}</b>
+                      {queueEntry ? (
+                        <div className="text-[10px] font-bold text-gray-700 space-y-1">
+                          {queueEntry.supplier && (
+                            <p>
+                              Supplier:{" "}
+                              <b className="text-gray-900">
+                                {queueEntry.supplier}
+                              </b>
+                            </p>
+                          )}
+                          {queueEntry.transportName && (
+                            <p>
+                              Transport:{" "}
+                              <b className="text-gray-900">
+                                {queueEntry.transportName}
+                              </b>
+                            </p>
+                          )}
+                          {queueEntry.itemCategory && (
+                            <p>
+                              Category:{" "}
+                              <b className="text-gray-900">
+                                {queueEntry.itemCategory}
+                              </b>
+                            </p>
+                          )}
+                          {queueEntry.itemName && (
+                            <p>
+                              Item:{" "}
+                              <b className="text-gray-900">
+                                {queueEntry.itemName}
+                              </b>
+                            </p>
+                          )}
+                          {queueEntry.packages &&
+                            Number(queueEntry.packages) > 1 && (
+                              <p>
+                                Packages:{" "}
+                                <b className="text-amber-700">
+                                  {queueEntry.packages}
+                                </b>
+                              </p>
+                            )}
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-gray-400 font-bold">
+                          Not in Queue
                         </p>
-                        {inwardEntry.itemName && (
-                          <p>
-                            Item: <b>{inwardEntry.itemName}</b>
-                          </p>
-                        )}
-                        {inwardEntry.category && (
-                          <p>
-                            Category: <b>{inwardEntry.category}</b>
-                          </p>
-                        )}
-                        {inwardEntry.subCategory && (
-                          <p>
-                            Sub-categories: <b>{inwardEntry.subCategory}</b>
-                          </p>
-                        )}
-                        {(inwardEntry.itemsCount ?? 0) > 0 && (
-                          <p>
-                            Total Qty: <b>{inwardEntry.itemsCount} pcs</b>
-                          </p>
-                        )}
-                        {inwardEntry.fromLocation && (
-                          <p>
-                            Godown: <b>{inwardEntry.fromLocation}</b>
-                          </p>
-                        )}
-                        {inwardEntry.toLocation && (
-                          <p>
-                            Shop: <b>{inwardEntry.toLocation}</b>
-                          </p>
-                        )}
-                        {inwardEntry.notes && (
-                          <p className="col-span-2 text-gray-600">
-                            {inwardEntry.notes}
-                          </p>
+                      )}
+                    </div>
+                  </div>
+                  {/* --- INWARD CHECKPOINT --- */}
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-black text-xs shadow-md ${inwardEntry ? "bg-green-600 text-white" : "bg-gray-200 text-gray-400"}`}
+                      >
+                        3
+                      </div>
+                    </div>
+                    <div
+                      className={`flex-1 mb-4 p-4 rounded-2xl border ${inwardEntry ? "bg-green-50 border-green-200" : "bg-gray-50 border-dashed border-gray-200 opacity-60"}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span
+                          className={`text-[9px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${inwardEntry ? "bg-green-600 text-white" : "bg-gray-300 text-gray-500"}`}
+                        >
+                          Inward / Opened
+                        </span>
+                        {inwardEntry?.date && (
+                          <span className="text-[10px] font-bold text-green-600">
+                            {inwardEntry.date?.split("T")[0] ||
+                              inwardEntry.date}
+                          </span>
                         )}
                       </div>
-                    ) : (
-                      <p className="text-[10px] text-gray-400 font-bold">
-                        No Inward record found
-                      </p>
-                    )}
+                      {inwardEntry ? (
+                        <div className="text-[10px] font-bold text-gray-700 space-y-2">
+                          <p>
+                            Opened by:{" "}
+                            <b className="text-gray-900">{inwardEntry.user}</b>
+                          </p>
+                          {inwardEntry.transportName && (
+                            <p>
+                              Transport:{" "}
+                              <b className="text-gray-900">
+                                {inwardEntry.transportName}
+                              </b>
+                            </p>
+                          )}
+                          {(inwardEntry.itemsCount ?? 0) > 0 && (
+                            <p>
+                              Total Qty in Bale:{" "}
+                              <b className="text-green-700">
+                                {inwardEntry.itemsCount} pcs
+                              </b>
+                            </p>
+                          )}
+                          {/* Bale Items with storage distribution */}
+                          {inwardEntry.baleItemsList &&
+                            inwardEntry.baleItemsList.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                <p className="text-[10px] font-black uppercase text-green-800 tracking-widest">
+                                  Items Received
+                                </p>
+                                {inwardEntry.baleItemsList.map((bi, biIdx) => (
+                                  <div
+                                    key={`${bi.itemName}-${bi.category}-${biIdx}`}
+                                    className="bg-white border border-green-200 rounded-xl p-3 space-y-1"
+                                  >
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-black text-gray-900">
+                                        {bi.itemName}
+                                      </span>
+                                      <span className="text-[9px] font-black bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">
+                                        {bi.category}
+                                      </span>
+                                      <span className="text-[9px] font-black bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                                        Qty: {bi.qty}
+                                      </span>
+                                    </div>
+                                    {Object.entries(bi.attributes || {})
+                                      .filter(([, v]) => v)
+                                      .map(([k, v]) => (
+                                        <span
+                                          key={k}
+                                          className="inline-block mr-2 text-[9px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded-full"
+                                        >
+                                          {k}: {v}
+                                        </span>
+                                      ))}
+                                    {/* Storage distribution */}
+                                    <div className="flex gap-2 flex-wrap mt-1">
+                                      {(bi.shopQty || 0) > 0 && (
+                                        <span className="text-[9px] font-black bg-blue-50 text-blue-700 border border-blue-200 px-2 py-1 rounded-lg">
+                                          🏪 Shop: {bi.shopQty}
+                                        </span>
+                                      )}
+                                      {Object.entries(bi.godownQuants || {})
+                                        .filter(([, v]) => (v || 0) > 0)
+                                        .map(([g, v]) => (
+                                          <span
+                                            key={g}
+                                            className="text-[9px] font-black bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-lg"
+                                          >
+                                            🏭 {g}: {v}
+                                          </span>
+                                        ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-gray-400 font-bold">
+                          Not yet opened in Inward
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedBiltyForHistory(null)}
-                  className="w-full mt-6 bg-gray-100 text-gray-700 font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest hover:bg-gray-200 transition-colors"
-                >
-                  Close
-                </button>
+                <div className="px-6 pb-6">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBiltyForHistory(null)}
+                    className="w-full bg-gray-100 text-gray-700 font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest hover:bg-gray-200 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           );
@@ -5695,6 +6903,27 @@ function SalesTab({
               inventory={inventory}
               activeBusinessId={activeBusinessId}
             />
+            {lineItemName &&
+              (() => {
+                const sku = Object.keys(inventory).find(
+                  (s) =>
+                    (!inventory[s].businessId ||
+                      inventory[s].businessId === activeBusinessId) &&
+                    inventory[s].itemName.toLowerCase() ===
+                      lineItemName.toLowerCase() &&
+                    inventory[s].category === lineCategory,
+                );
+                const shopQty = sku ? inventory[sku].shop || 0 : null;
+                if (shopQty === null) return null;
+                return (
+                  <p
+                    className={`text-[10px] font-black mt-1 ml-1 ${shopQty === 0 ? "text-red-600" : "text-green-700"}`}
+                  >
+                    Shop stock: <span className="text-sm">{shopQty}</span> pcs
+                    available
+                  </p>
+                );
+              })()}
           </div>
           <div>
             <p className="text-[10px] font-black uppercase text-gray-400 ml-1 mb-1">
@@ -5819,7 +7048,8 @@ function ItemHistoryPanel({
       (tx) =>
         (!tx.businessId || tx.businessId === activeBusinessId) &&
         (tx.sku === sku ||
-          tx.itemName?.toLowerCase() === item.itemName?.toLowerCase()),
+          (tx.itemName?.toLowerCase() === item.itemName?.toLowerCase() &&
+            (!tx.category || tx.category === item.category))),
     )
     .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
@@ -5856,6 +7086,60 @@ function ItemHistoryPanel({
           </button>
         </div>
         <div className="p-6 space-y-5">
+          {/* WhatsApp Share Button */}
+          <button
+            type="button"
+            onClick={() => {
+              let msg = `📦 *${item.itemName}* (${item.category})\n`;
+              const attrs = Object.entries(item.attributes || {})
+                .filter(([, v]) => v)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(", ");
+              if (attrs) msg += `📝 ${attrs}\n`;
+              msg += "\n📊 *Current Stock*\n";
+              msg += `🏪 Shop: ${item.shop || 0} pcs\n`;
+              for (const [g, v] of Object.entries(item.godowns || {})) {
+                msg += `🏭 ${g}: ${v || 0} pcs\n`;
+              }
+              msg += "\n📅 *Transaction Timeline*\n";
+              for (const tx of itemTxs) {
+                const d = tx.date?.split("T")[0] || tx.date;
+                if (
+                  tx.type === "INWARD" ||
+                  tx.type === "OPENING_STOCK" ||
+                  tx.type === "DIRECT_STOCK"
+                ) {
+                  msg += `✅ Added ${tx.itemsCount ?? "?"} pcs on ${d}`;
+                  if (tx.biltyNo) msg += ` (Bilty: ${tx.biltyNo})`;
+                  msg += ` by ${tx.user || "?"}\n`;
+                  if (tx.baleItemsList) {
+                    for (const bi of tx.baleItemsList) {
+                      if ((bi.shopQty || 0) > 0)
+                        msg += `   🏪 Shop: ${bi.shopQty} pcs\n`;
+                      for (const [g2, v2] of Object.entries(
+                        bi.godownQuants || {},
+                      ).filter(([, val]) => val > 0)) {
+                        msg += `   🏭 ${g2}: ${v2} pcs\n`;
+                      }
+                    }
+                  }
+                } else if (tx.type === "transfer") {
+                  msg += `🔄 Transferred ${tx.itemsCount ?? "?"} pcs: ${tx.fromLocation} → ${tx.toLocation} on ${d} by ${tx.transferredBy || tx.user || "?"}\n`;
+                } else if (tx.type === "SALE") {
+                  msg += `💰 Sold ${tx.itemsCount ?? "?"} pcs on ${d} by ${tx.user || "?"}\n`;
+                }
+              }
+              msg += "\n_Shared from StockFlow_";
+              window.open(
+                `https://wa.me/?text=${encodeURIComponent(msg)}`,
+                "_blank",
+              );
+            }}
+            className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white font-black py-3 rounded-2xl text-xs uppercase tracking-widest shadow-md transition-colors"
+          >
+            <Share2 size={16} />
+            Share on WhatsApp
+          </button>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="bg-green-50 border border-green-100 p-4 rounded-2xl text-center">
               <p className="text-[10px] font-black uppercase text-green-600">
@@ -5903,30 +7187,86 @@ function ItemHistoryPanel({
                           {(tx.type === "INWARD" ||
                             tx.type === "OPENING_STOCK" ||
                             tx.type === "DIRECT_STOCK") && (
-                            <p className="font-black text-sm text-green-700">
-                              Added {tx.itemsCount ?? "?"} items{" "}
-                              {tx.biltyNo ? `(Bilty: ${tx.biltyNo})` : ""}
-                            </p>
+                            <div className="space-y-1">
+                              <p className="font-black text-sm text-green-700">
+                                ✅ Stock Added — {tx.itemsCount ?? "?"} pcs
+                              </p>
+                              {tx.biltyNo && (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-green-100 text-green-800 px-2.5 py-1 rounded-full border border-green-200">
+                                  📦 Bilty: {tx.biltyNo}
+                                </span>
+                              )}
+                              {tx.baleItemsList &&
+                                tx.baleItemsList.length > 0 && (
+                                  <div className="mt-2 space-y-1">
+                                    {tx.baleItemsList.map((bi, biIdx) => (
+                                      <div
+                                        key={`${bi.itemName}-${bi.category}-${biIdx}`}
+                                        className="bg-green-50 border border-green-100 rounded-xl p-2 text-[10px] font-bold text-gray-700"
+                                      >
+                                        <span className="text-gray-900">
+                                          {bi.itemName}
+                                        </span>
+                                        <span className="text-gray-400 ml-1">
+                                          ({bi.category})
+                                        </span>
+                                        <span className="ml-2 text-green-700">
+                                          Qty: {bi.qty}
+                                        </span>
+                                        <div className="flex gap-1 flex-wrap mt-1">
+                                          {(bi.shopQty || 0) > 0 && (
+                                            <span className="text-[9px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-md border border-blue-100">
+                                              🏪 Shop: {bi.shopQty}
+                                            </span>
+                                          )}
+                                          {Object.entries(bi.godownQuants || {})
+                                            .filter(([, v]) => (v || 0) > 0)
+                                            .map(([g, v]) => (
+                                              <span
+                                                key={g}
+                                                className="text-[9px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-md border border-amber-100"
+                                              >
+                                                🏭 {g}: {v}
+                                              </span>
+                                            ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                            </div>
                           )}
                           {tx.type === "transfer" && (
-                            <p className="font-black text-sm text-purple-700">
-                              Transferred {tx.itemsCount ?? "?"} pcs ·{" "}
-                              {tx.fromLocation} → {tx.toLocation}
-                            </p>
+                            <div className="space-y-1">
+                              <p className="font-black text-sm text-purple-700">
+                                🔄 Transferred {tx.itemsCount ?? "?"} pcs
+                              </p>
+                              <p className="text-[11px] font-bold text-purple-600">
+                                {tx.fromLocation} → {tx.toLocation}
+                              </p>
+                              {tx.subCategory && (
+                                <p className="text-[10px] text-gray-500">
+                                  Specs: <b>{tx.subCategory}</b>
+                                </p>
+                              )}
+                            </div>
                           )}
                           {tx.type === "SALE" && (
                             <p className="font-black text-sm text-red-700">
-                              Sold {tx.itemsCount ?? "?"} pcs from Shop
+                              💰 Sold {tx.itemsCount ?? "?"} pcs from Shop
                             </p>
                           )}
                           {tx.type === "STOCK_OVERWRITE" && (
                             <p className="font-black text-sm text-gray-600">
-                              Stock adjusted
+                              ⚙️ Stock adjusted
                             </p>
                           )}
-                          <p className="text-[10px] font-bold text-gray-400 mt-0.5">
-                            By {tx.transferredBy || tx.user || "?"} ·{" "}
-                            {tx.date?.split("T")[0] || tx.date}
+                          <p className="text-[10px] font-bold text-gray-400 mt-1">
+                            By{" "}
+                            <b className="text-gray-600">
+                              {tx.transferredBy || tx.user || "?"}
+                            </b>{" "}
+                            · {tx.date?.split("T")[0] || tx.date}
                           </p>
                         </div>
                       </div>
@@ -6130,6 +7470,9 @@ export default function App() {
   });
   const [_inwardRecords, _setInwardRecords] = useState<InwardRecord[]>([]);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(
+    null,
+  );
+  const [moveToQueueData, setMoveToQueueData] = useState<TransitRecord | null>(
     null,
   );
 
@@ -6353,7 +7696,7 @@ export default function App() {
             active={activeTab === "transit"}
             onClick={() => setActiveTab("transit")}
             icon={Navigation}
-            label="Transit Ledger"
+            label={tabNames.transit}
           />
           {currentUser.role !== "supplier" && (
             <>
@@ -6361,13 +7704,13 @@ export default function App() {
                 active={activeTab === "warehouse"}
                 onClick={() => setActiveTab("warehouse")}
                 icon={Warehouse}
-                label="Arrival Queue"
+                label={tabNames.warehouse}
               />
               <SidebarButton
                 active={activeTab === "inward"}
                 onClick={() => setActiveTab("inward")}
                 icon={PlusCircle}
-                label="Inward Processing"
+                label={tabNames.inward}
               />
               {currentUser.role === "admin" && (
                 <SidebarButton
@@ -6381,19 +7724,21 @@ export default function App() {
                 active={activeTab === "transfer"}
                 onClick={() => setActiveTab("transfer")}
                 icon={ArrowRightLeft}
-                label="Transfers"
+                label={tabNames.transfer}
               />
-              <SidebarButton
-                active={activeTab === "sales"}
-                onClick={() => setActiveTab("sales")}
-                icon={ShoppingCart}
-                label={tabNames.sales}
-              />
+              {currentUser.role === "admin" && (
+                <SidebarButton
+                  active={activeTab === "sales"}
+                  onClick={() => setActiveTab("sales")}
+                  icon={ShoppingCart}
+                  label={tabNames.sales}
+                />
+              )}
               <SidebarButton
                 active={activeTab === "history"}
                 onClick={() => setActiveTab("history")}
                 icon={History}
-                label="History Ledger"
+                label={tabNames.history}
               />
             </>
           )}
@@ -6459,6 +7804,8 @@ export default function App() {
             allTransitGoods={transitGoods}
             categories={categories}
             transportTracking={transportTracking}
+            setMoveToQueueData={setMoveToQueueData}
+            setActiveTabFromTransit={setActiveTab}
           />
         )}
         {activeTab === "warehouse" && currentUser.role !== "supplier" && (
@@ -6477,6 +7824,8 @@ export default function App() {
             transportTracking={transportTracking}
             categories={categories}
             transitGoods={transitGoods}
+            moveToQueueData={moveToQueueData}
+            clearMoveToQueueData={() => setMoveToQueueData(null)}
             existingQueueBiltyNos={pendingParcels
               .filter((p) => !p.businessId || p.businessId === activeBusinessId)
               .map((p) => p.biltyNo)}
@@ -6528,7 +7877,7 @@ export default function App() {
             currentUser={currentUser}
           />
         )}
-        {activeTab === "sales" && currentUser.role !== "supplier" && (
+        {activeTab === "sales" && currentUser.role === "admin" && (
           <SalesTab
             inventory={inventory}
             updateStock={updateStock}
@@ -6550,6 +7899,9 @@ export default function App() {
             inventory={inventory}
             transitGoods={transitGoods}
             pendingParcels={pendingParcels}
+            categories={categories}
+            godowns={godowns}
+            showNotification={showNotification}
           />
         )}
         {activeTab === "settings" && currentUser.role === "admin" && (
@@ -6677,14 +8029,14 @@ export default function App() {
             active={activeTab === "dashboard"}
             onClick={() => setActiveTab("dashboard")}
             icon={LayoutDashboard}
-            label="Stock"
+            label={tabNames.dashboard}
           />
         )}
         <NavButton
           active={activeTab === "transit"}
           onClick={() => setActiveTab("transit")}
           icon={Navigation}
-          label="Transit"
+          label={tabNames.transit}
         />
         {currentUser.role !== "supplier" && (
           <>
@@ -6712,12 +8064,14 @@ export default function App() {
               icon={ArrowRightLeft}
               label="Move"
             />
-            <NavButton
-              active={activeTab === "sales"}
-              onClick={() => setActiveTab("sales")}
-              icon={ShoppingCart}
-              label="Sales"
-            />
+            {currentUser.role === "admin" && (
+              <NavButton
+                active={activeTab === "sales"}
+                onClick={() => setActiveTab("sales")}
+                icon={ShoppingCart}
+                label="Sales"
+              />
+            )}
           </>
         )}
         {currentUser.role === "admin" && (

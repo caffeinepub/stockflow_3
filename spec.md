@@ -1,33 +1,63 @@
 # StockFlow
 
 ## Current State
-- Transfer tab has a 'Transfer Another Item' button that appears only after a successful transfer (transferDone state). It resets search/selectedSku/qty.
-- Transit tab: packages is a plain string field with no package postfix auto-expansion logic. Duplicate bilty prevention exists.
-- Queue (WarehouseTab): packages is a plain string, no auto-expand bale tab logic, no Received/Pending per-bale status.
-- Inward tab: one `totalQty` field for whole bale. No per-item 'Total Qty in Bale' field. Distribution done via shopQty + godownQuants per item.
-- History tab: bilty numbers are plain `<span>` elements with no click handler. No bilty journey panel exists.
+
+StockFlow is a client-side React inventory and stock management system (App.tsx, ~321KB) with:
+- Transit, Queue (Warehouse), Inward, Transfer, History, Dashboard, Sales, Admin tabs
+- Multi-package bilty system with postfix labeling (e.g. sola1011X5(1)...sola1011X5(5))
+- Bilty uniqueness enforced per-tab; auto-removal from Transit when saved in Queue or Inward
+- History tab with bilty search and item history panel in Dashboard
+- WhatsApp share from item history
+- Role-based access (admin/staff/supplier)
 
 ## Requested Changes (Diff)
 
 ### Add
-- **Transfer tab:** Standalone refresh/reset icon button (always visible, not just after transfer) that clears selectedSku and search so user can re-select a different item
-- **Transit tab:** Package count field (numeric) in the Transit form. When packages > 1, instead of saving one entry, auto-create N entries with bilty postfix: `biltyX{N}(1)`, `biltyX{N}(2)`, etc. Each child entry inherits same item name, supplier, package number from the main form
-- **Queue tab:** When a bilty with packages > 1 is entered/auto-filled from Transit, auto-expand into N sub-entries (tabs/rows). Each shows: unique bilty label (sola1011X5(1)...), item category, item name (editable per bale), and a Received/Pending status toggle. Saving: Received bales go to Queue as separate bilty entries, Pending bales go to Transit as separate bilty entries
-- **Inward tab:** Permanent 'Total Qty in Bale' field placed after item name in the inward form. Validation: sum of ALL items' godown + shop distributions across the whole bale must equal this Total Qty in Bale value
-- **History tab:** Bilty numbers become clickable. Clicking opens a side panel/modal showing the full journey: Transit (date + entered by), Queue (date + entered by), Inward (date + opened by), item name with sub-categories, total qty, and godown/shop distribution split
+- **Full Bilty Timeline in History tab**: A detailed timeline panel per bilty showing every checkpoint (Transit entry, Queue entry, Inward opening) with exact timestamp, user account, item category, item name, supplier, transport name, qty, and godown/shop distribution at each step. This is a richer version of the existing bilty history panel.
+- **Inventory/Dashboard bilty info**: Each item in the Dashboard item history panel must show the bilty number it was received from, the date/time the parcel was opened, and the person who opened it, plus full transfer movement (who, from/to, when).
 
 ### Modify
-- **Transfer tab:** Remove the post-transfer 'Transfer Another Item' button (replace with always-visible refresh icon near item search/selection area)
-- **Inward tab:** Existing `totalQty` field renamed/repurposed to 'Total Qty in Bale'. Validation updated to check sum of ALL baleItems' (shopQty + all godownQuants) equals this field
-- **Queue tab:** When packages > 1, the single form entry is replaced by the expanded bale tab UI
+- **Bug Fix -- Transit not cleared on Queue save (multi-package)**: `handleLog` in WarehouseTab filters Transit by exact base bilty match (`g.biltyNo !== bNo`). But when packages > 1, Transit entries are stored with postfixes (sola1011X5(1), sola1011X5(2)...). The filter misses them. Fix: after saving to Queue, also remove all Transit entries whose biltyNo starts with `${bNo}X` OR matches the base bilty exactly.
+- **Bug Fix -- Move to Queue populates full postfix**: The `useEffect` in WarehouseTab that reads `moveToQueueData` fills the bilty field with the full postfixed label (e.g. sola1011X5(1)). Fix: parse the base bilty number (strip `X{N}({i})` suffix), extract the package count N, set total packages field to N, trigger the multi-bale expansion algorithm so the form shows N bale tabs ready for Received/Pending marking. Auto-fill transport, supplier, item category, item name from the Transit record.
+- **Inward smart bilty search**: Current `handleLookup` matches exact bilty string only. Fix: when user types a base bilty (e.g. "sola1011"), also search Queue and Transit for postfixed variants (entries whose biltyNo starts with that base + "X"). If found, extract package count N from the postfix, set `inwardPackages` to N, generate N bale tabs (sola1011X5(1)...sola1011X5(5)). Auto-fill transport, supplier, item category from the matched Transit/Queue record. Then check `transactions` for any already-processed Inward entries with same postfixed bilty numbers -- for each already-opened bale, render its tab as read-only/locked showing the previously entered data. Only pending bale tabs remain editable.
+- **Inward packages > 1 -- per-bale qty**: Currently `totalQty` is shared/auto-filled across all bale tabs. Fix: each bale tab in `perBaleData` must have its own independent `totalQty` field. The qty validation (godown + shop distribution must equal bale's own `totalQty`) applies per-bale, not across all bales.
+- **Inward packages > 1 -- postfix on save**: In the multi-bale save path, each received bale must be saved as a Transaction with the unique postfixed bilty label (e.g. sola1011X5(2)) as `biltyNo`, not the base bilty. Currently saving without postfix as 1 entry.
+- **Inward packages > 1 -- no cross-tab auto-fill**: When user switches between bale tabs, item name, qty, and other fields must NOT carry over from a previously filled tab. Each tab starts blank (except locked/already-opened tabs).
 
 ### Remove
-- Post-transfer success banner with 'Transfer Another Item' button (replaced by always-visible refresh icon)
-- Queue bale tab fields: stock to godown, stock to shop, qty per bale (not needed at queue stage — just track receipt)
+- Nothing removed.
 
 ## Implementation Plan
-1. **Transfer tab:** Add a small RefreshCw icon button always visible next to the item search area. On click: reset selectedSku, search, qty, transferDone. Remove the post-transfer banner button (keep the success message but remove the button or simplify).
-2. **Transit tab:** Add numeric `packageCount` field to form. In handleAdd: if packageCount > 1, generate N entries with bilty labels `{biltyNo}X{N}({i})` each with same supplier, itemName, itemCategory, packageCount. If packageCount is 1 or empty, save single entry as before. Keep duplicate bilty check (each generated label is unique).
-3. **Queue tab:** Add `packageCount` to form state. When bilty auto-fills from Transit and packageCount > 1, show an expanded UI with N bale rows, each having a unique bilty label, item category (combo), item name (combo), and a Received/Pending toggle. On save: Received bales → pendingParcels (Queue), Pending bales → transitGoods (Transit) as unique entries.
-4. **Inward tab:** Rename `totalQty` label to 'Total Qty in Bale'. Place after item name section. Validate sum of all baleItems shopQty + all godownQuants equals totalQty. Show per-item subtotal and bale-level total in the validation message.
-5. **History tab:** Add `selectedBilty` state and panel. Make bilty `<span>` elements clickable with onClick. Build a lookup function that finds matching records in transitGoods, pendingParcels, and transactions (inward type) by biltyNo. Show the journey timeline in a modal/drawer with all requested fields including distribution.
+
+1. **Fix Transit removal on Queue save**: In `handleLog` (WarehouseTab), after the multi-package path where received bales are added to Queue, update the Transit filter to:
+   ```
+   setTransitGoods(prev => prev.filter(g => {
+     const bil = g.biltyNo?.toLowerCase();
+     return bil !== bNo.toLowerCase() && !bil?.startsWith(bNo.toLowerCase() + 'x');
+   }));
+   ```
+   Apply same logic in the single-package path.
+
+2. **Fix Move to Queue autofill**: In the WarehouseTab `useEffect` that reads `moveToQueueData`:
+   - Parse base bilty: strip `X{N}({i})` from the end of the biltyNo string using regex `/X(\d+)\(\d+\)$/i`
+   - Extract N from the match
+   - Set bilty prefix/number from base
+   - Set `form.packages` to N
+   - Auto-fill transport, supplier, itemCategory, itemName
+   - The existing multi-bale expansion `useEffect` (triggered by packages > 1) will generate N bale tabs
+
+3. **Inward smart bilty search**: Update `handleLookup` and the Queue dropdown search:
+   - If exact match not found, search for postfixed variants: `transitGoods.find(g => g.biltyNo.match(new RegExp('^' + base + 'X', 'i')))`
+   - Extract package count N from first matched entry's biltyNo
+   - Set `inwardPackages` to N → triggers perBaleData generation
+   - After perBaleData is generated, scan each bale label against `transactions` for existing INWARD entries; mark those bales as `locked: true` with their previous data
+
+4. **Per-bale qty**: Change `perBaleData` item structure to include `totalQty: string` per bale. In the Inward JSX for packages > 1, render a separate "Qty in this bale" input for each bale tab. Validate per-bale: sum of items' godown+shop must equal that bale's `totalQty`.
+
+5. **Postfix on save**: In the multi-bale `handleSaveAllBales` path, use `bale.label` (e.g. sola1011X5(2)) as the `biltyNo` in the Transaction record, not the base bilty.
+
+6. **No cross-tab auto-fill**: In the `perBaleData` state, ensure each bale's `items` array is initialized as empty `[]` and is never copied from another bale when switching tabs.
+
+7. **Full Bilty Timeline panel in History tab**: Enhance the `selectedBiltyForHistory` panel to show a full activity log: find all Transaction records (including INWARD, INWARD_PENDING, transfer) and Transit/Queue snapshots that reference this bilty. Display as a vertical timeline with timestamp, user, action type, and all available details (category, item name, supplier, transport, qty, godown/shop distribution per checkpoint).
+
+8. **Dashboard item history bilty info**: In `ItemHistoryPanel`, for each INWARD transaction entry in the timeline, prominently display the bilty number (already stored in `tx.biltyNo`), date/time, and `tx.user` (who opened). For transfer entries, show from/to/by/date. This likely already exists partially -- ensure `tx.biltyNo` is displayed clearly as a badge alongside the timeline entry.
