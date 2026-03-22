@@ -499,7 +499,8 @@ function DashboardTab({
                               )}
                             </div>
                             {(() => {
-                              const inwardTx = transactions
+                              // Fix 7: Show ALL bilty numbers for this item
+                              const allInwardTxs = transactions
                                 .filter(
                                   (tx) =>
                                     (!tx.businessId ||
@@ -521,20 +522,33 @@ function DashboardTab({
                                 )
                                 .sort((a, b) =>
                                   (a.date || "").localeCompare(b.date || ""),
-                                )[0];
-                              if (!inwardTx) return null;
+                                );
+                              if (allInwardTxs.length === 0) return null;
+                              const uniqueBiltyNos = [
+                                ...new Set(
+                                  allInwardTxs
+                                    .map((tx) => tx.biltyNo)
+                                    .filter(Boolean),
+                                ),
+                              ];
+                              const firstTx = allInwardTxs[0];
                               return (
                                 <div className="mt-1.5 space-y-0.5">
-                                  {inwardTx.biltyNo && (
-                                    <span className="inline-flex items-center gap-1 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded border border-green-100">
-                                      📦 {inwardTx.biltyNo}
-                                    </span>
-                                  )}
+                                  <div className="flex flex-wrap gap-1">
+                                    {uniqueBiltyNos.map((bn) => (
+                                      <span
+                                        key={bn}
+                                        className="inline-flex items-center gap-1 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded border border-green-100"
+                                      >
+                                        📦 {bn}
+                                      </span>
+                                    ))}
+                                  </div>
                                   <p className="text-[9px] text-gray-400 font-bold">
-                                    Added{" "}
-                                    {inwardTx.date?.split("T")[0] ||
-                                      inwardTx.date}{" "}
-                                    · {inwardTx.user || "?"}
+                                    First added{" "}
+                                    {firstTx.date?.split("T")[0] ||
+                                      firstTx.date}{" "}
+                                    · {firstTx.user || "?"}
                                   </p>
                                 </div>
                               );
@@ -1210,7 +1224,7 @@ function WarehouseTab({
     clearMoveToQueueData?.();
   }, [moveToQueueData]);
 
-  // Auto-fill from Transit when bilty matches
+  // Auto-fill from Transit when bilty matches (search by base bilty, extract package count from postfix)
   // biome-ignore lint/correctness/useExhaustiveDependencies: only run on bilty change
   useEffect(() => {
     if (!biltyNumber || !transitGoods) return;
@@ -1219,9 +1233,19 @@ function WarehouseTab({
     const transitMatch = (transitGoods || []).find(
       (g) =>
         (!g.businessId || g.businessId === activeBusinessId) &&
-        g.biltyNo?.toLowerCase() === bNo.toLowerCase(),
+        // Match exact bilty OR match by stripping postfix from transit entry
+        (g.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+          (g.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            bNo.toLowerCase()),
     );
     if (transitMatch) {
+      // Extract package count from postfix (e.g. sola1011X5(1) -> 5)
+      const postfixMatch = (transitMatch.biltyNo || "").match(
+        /X(\d+)\(\d+\)$/i,
+      );
+      const extractedPkg = postfixMatch
+        ? postfixMatch[1]
+        : transitMatch.packages || "";
       setForm((prev) => ({
         ...prev,
         transportName: transitMatch.transportName || prev.transportName,
@@ -1231,7 +1255,7 @@ function WarehouseTab({
           transitMatch.category ||
           prev.itemCategory,
         itemName: transitMatch.itemName || prev.itemName,
-        packages: transitMatch.packages || prev.packages,
+        packages: extractedPkg || prev.packages,
       }));
       showNotification("Auto-filled from Transit entry.", "success");
     }
@@ -1249,8 +1273,24 @@ function WarehouseTab({
       // Save received bales to Queue, pending bales to Transit
       const receivedBales = baleRows.filter((r) => r.status === "received");
       const pendingBales = baleRows.filter((r) => r.status === "pending");
+      // Fix 3: Check for duplicates in Queue and inwardHistory per bale
+      const inwardBiltySet = new Set(
+        (existingQueueBiltyNos ?? []).map((b) => b.toLowerCase()),
+      );
+      const dupLabels = receivedBales
+        .filter((r) => inwardBiltySet.has(r.biltyLabel.toLowerCase()))
+        .map((r) => r.biltyLabel);
+      if (dupLabels.length > 0) {
+        showNotification(
+          `Duplicate bales blocked: ${dupLabels.join(", ")}`,
+          "error",
+        );
+      }
+      const safeReceivedBales = receivedBales.filter(
+        (r) => !inwardBiltySet.has(r.biltyLabel.toLowerCase()),
+      );
       setPendingParcels((prev) => [
-        ...receivedBales.map((r, i) => ({
+        ...safeReceivedBales.map((r, i) => ({
           id: Date.now() + i,
           biltyNo: r.biltyLabel,
           businessId: activeBusinessId,
@@ -1283,18 +1323,23 @@ function WarehouseTab({
           ...prev,
         ]);
       }
-      // Remove original bilty from transit (both exact and postfixed variants)
-      if (setTransitGoods) {
+      // Remove from Transit ONLY the bales that were actually received
+      if (setTransitGoods && receivedBales.length > 0) {
+        const receivedLabels = new Set(
+          receivedBales.map((r) => r.biltyLabel.toLowerCase()),
+        );
         setTransitGoods((prev) =>
           prev.filter((g) => {
-            const gBase = (g.biltyNo || "")
-              .replace(/X\d+\(\d+\)$/i, "")
-              .toLowerCase()
-              .trim();
-            return (
-              gBase !== bNo.toLowerCase() &&
-              g.biltyNo?.toLowerCase() !== bNo.toLowerCase()
-            );
+            // Remove exact postfix match for received bales
+            if (receivedLabels.has(g.biltyNo?.toLowerCase() || ""))
+              return false;
+            // Also remove the base (non-postfixed) bilty entry if all bales are received
+            if (
+              pendingBales.length === 0 &&
+              g.biltyNo?.toLowerCase() === bNo.toLowerCase()
+            )
+              return false;
+            return true;
           }),
         );
       }
@@ -1311,7 +1356,7 @@ function WarehouseTab({
         customData: {},
       });
       showNotification(
-        `${receivedBales.length} received, ${pendingBales.length} pending`,
+        `${safeReceivedBales.length} received, ${pendingBales.length} pending`,
         "success",
       );
       return;
@@ -1849,6 +1894,7 @@ function InwardTab({
   activeBusinessId,
   transactions,
   setInventory,
+  setConfirmDialog,
 }: {
   inventory: Record<string, InventoryItem>;
   categories: Category[];
@@ -1883,6 +1929,9 @@ function InwardTab({
   setInventory: React.Dispatch<
     React.SetStateAction<Record<string, InventoryItem>>
   >;
+  setConfirmDialog: (
+    d: { message: string; onConfirm: () => void } | null,
+  ) => void;
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1997,23 +2046,43 @@ function InwardTab({
   const handleLookup = (pPrefix: string, pNumber: string) => {
     const bNo = pPrefix === "0" ? pNumber : `${pPrefix}-${pNumber}`;
     const searchStr = bNo.toLowerCase();
+    // Fix 4: Search by base bilty (strip postfix from entries) for Transit, Queue, and inwardHistory
     const transitMatch = transitGoods.find(
-      (g) => g.biltyNo?.toLowerCase() === searchStr,
+      (g) =>
+        g.biltyNo?.toLowerCase() === searchStr ||
+        (g.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+          searchStr,
     );
     const queueMatch = pendingParcels.find(
-      (p) => p.biltyNo?.toLowerCase() === searchStr,
+      (p) =>
+        p.biltyNo?.toLowerCase() === searchStr ||
+        (p.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+          searchStr,
     );
     const match = queueMatch || transitMatch;
     if (match) {
       setMatchedDetails(match);
+      // Extract package count from postfix or packages field
+      const postfixMatch = ((match as TransitRecord).biltyNo || "").match(
+        /X(\d+)\(\d+\)$/i,
+      );
+      const extractedPkg = postfixMatch
+        ? postfixMatch[1]
+        : (match as PendingParcel).packages ||
+          (match as TransitRecord).packages ||
+          "";
       setItemForm((prev) => ({
         ...prev,
         itemName: (match as TransitRecord).itemName || prev.itemName,
-        category: (match as TransitRecord).category || prev.category || "",
+        category:
+          (match as PendingParcel).itemCategory ||
+          (match as TransitRecord).itemCategory ||
+          (match as TransitRecord).category ||
+          prev.category ||
+          "",
       }));
-      const pkgs =
-        (match as PendingParcel).packages || (match as TransitRecord).packages;
-      if (pkgs && Number(pkgs) > 1) setInwardPackages(pkgs);
+      if (extractedPkg && Number(extractedPkg) > 1)
+        setInwardPackages(extractedPkg);
       showNotification("Found Bilty! Data auto-filled.", "success");
     } else {
       setMatchedDetails(null);
@@ -2116,7 +2185,7 @@ function InwardTab({
         return;
       }
     }
-    // Auto-create new inventory items typed in combo box
+    // Fix 6: Create new inventory items only at save time (not before)
     for (const item of baleItems) {
       if (item.itemName && item.category) {
         const exists = Object.values(inventory).some(
@@ -2862,6 +2931,307 @@ function InwardTab({
               </div>
             );
           })()}
+          {/* Per-Bale Save Button */}
+          {perBaleData[activeBaleIdx] && !perBaleData[activeBaleIdx].locked && (
+            <div className="px-6 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const bale = perBaleData[activeBaleIdx];
+                  if (!bale || bale.locked) return;
+                  if (bale.received) {
+                    if (bale.items.length === 0) {
+                      showNotification(
+                        "Add items to this bale before saving.",
+                        "error",
+                      );
+                      return;
+                    }
+                    if (bale.totalQty) {
+                      const dist = bale.items.reduce(
+                        (s, i) =>
+                          s +
+                          (Number(i.shopQty) || 0) +
+                          Object.values(i.godownQuants).reduce(
+                            (a, b) => a + Number(b || 0),
+                            0,
+                          ),
+                        0,
+                      );
+                      if (dist !== Number(bale.totalQty)) {
+                        showNotification(
+                          `Qty mismatch: ${dist} vs ${bale.totalQty}`,
+                          "error",
+                        );
+                        return;
+                      }
+                    }
+                    const existingTx = transactions.find(
+                      (t) =>
+                        t.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                        (!t.businessId || t.businessId === activeBusinessId),
+                    );
+                    if (existingTx && currentUser.role !== "admin") {
+                      showNotification(
+                        `Bilty ${bale.label} already processed. Admin override required.`,
+                        "error",
+                      );
+                      return;
+                    }
+                    // Check for new items that need to be created
+                    const newItemNames = bale.items
+                      .filter((itm) => {
+                        if (!itm.itemName || !itm.category) return false;
+                        return !Object.values(inventory).some(
+                          (inv) =>
+                            (!inv.businessId ||
+                              inv.businessId === activeBusinessId) &&
+                            inv.category === itm.category &&
+                            inv.itemName.toLowerCase() ===
+                              itm.itemName.toLowerCase(),
+                        );
+                      })
+                      .map((itm) => `${itm.itemName} (${itm.category})`);
+                    const doSave = () => {
+                      // Create new inventory items
+                      for (const itm of bale.items) {
+                        if (itm.itemName && itm.category) {
+                          const exists = Object.values(inventory).some(
+                            (inv) =>
+                              (!inv.businessId ||
+                                inv.businessId === activeBusinessId) &&
+                              inv.category === itm.category &&
+                              inv.itemName.toLowerCase() ===
+                                itm.itemName.toLowerCase(),
+                          );
+                          if (!exists) {
+                            const newSku = generateSku(
+                              itm.category,
+                              itm.itemName,
+                              {},
+                              "0",
+                              activeBusinessId,
+                            );
+                            setInventory((prev) => ({
+                              ...prev,
+                              [newSku]: {
+                                sku: newSku,
+                                category: itm.category,
+                                itemName: itm.itemName,
+                                attributes: {},
+                                shop: 0,
+                                godowns: {},
+                                saleRate: 0,
+                                purchaseRate: 0,
+                                businessId: activeBusinessId,
+                              },
+                            }));
+                          }
+                        }
+                      }
+                      // Update stock
+                      for (const itm of bale.items) {
+                        if (Number(itm.shopQty) > 0)
+                          updateStock(
+                            itm.sku,
+                            {
+                              ...itm,
+                              saleRate: Number(itm.saleRate),
+                              purchaseRate: Number(itm.purchaseRate),
+                            },
+                            Number(itm.shopQty),
+                            0,
+                            "Main Godown",
+                          );
+                        for (const [g, q] of Object.entries(itm.godownQuants)) {
+                          if (Number(q) > 0)
+                            updateStock(
+                              itm.sku,
+                              {
+                                ...itm,
+                                saleRate: Number(itm.saleRate),
+                                purchaseRate: Number(itm.purchaseRate),
+                              },
+                              0,
+                              Number(q),
+                              g,
+                            );
+                        }
+                      }
+                      // Create transaction
+                      setTransactions((prev) => [
+                        {
+                          id: Date.now(),
+                          type: "INWARD" as const,
+                          biltyNo: bale.label,
+                          businessId: activeBusinessId,
+                          date: new Date().toISOString().split("T")[0],
+                          user: currentUser.username,
+                          transportName:
+                            (matchedDetails as TransitRecord)?.transportName ||
+                            "",
+                          itemsCount: bale.totalQty
+                            ? Number(bale.totalQty)
+                            : bale.items.reduce(
+                                (s, i) =>
+                                  s +
+                                  (Number(i.shopQty) || 0) +
+                                  Object.values(i.godownQuants).reduce(
+                                    (a, b) => a + Number(b || 0),
+                                    0,
+                                  ),
+                                0,
+                              ),
+                          totalQtyInBale: bale.totalQty
+                            ? Number(bale.totalQty)
+                            : undefined,
+                          baleItemsList: bale.items.map((i) => ({
+                            itemName: i.itemName,
+                            category: i.category,
+                            attributes: { ...i.attributes },
+                            shopQty: Number(i.shopQty) || 0,
+                            godownQuants: Object.fromEntries(
+                              Object.entries(i.godownQuants).map(([g, q]) => [
+                                g,
+                                Number(q) || 0,
+                              ]),
+                            ),
+                            saleRate: Number(i.saleRate) || 0,
+                            purchaseRate: Number(i.purchaseRate) || 0,
+                            qty:
+                              (Number(i.shopQty) || 0) +
+                              Object.values(i.godownQuants).reduce(
+                                (a, b) => a + Number(b || 0),
+                                0,
+                              ),
+                          })),
+                        },
+                        ...prev,
+                      ]);
+                      // Remove from transit/queue
+                      setTransitGoods((prev) =>
+                        prev.filter(
+                          (g) =>
+                            g.biltyNo?.toLowerCase() !==
+                            bale.label.toLowerCase(),
+                        ),
+                      );
+                      setPendingParcels((prev) =>
+                        prev.filter(
+                          (p) =>
+                            p.biltyNo?.toLowerCase() !==
+                            bale.label.toLowerCase(),
+                        ),
+                      );
+                      // Mark bale as locked
+                      const updated = [...perBaleData];
+                      updated[activeBaleIdx] = {
+                        ...updated[activeBaleIdx],
+                        locked: true,
+                        lockedBy: currentUser.username,
+                        lockedDate: new Date().toISOString().split("T")[0],
+                      };
+                      setPerBaleData(updated);
+                      showNotification(
+                        `Bale ${bale.label} saved to inventory!`,
+                        "success",
+                      );
+                    };
+                    if (newItemNames.length > 0) {
+                      setConfirmDialog({
+                        message: `Create new inventory items?\n${newItemNames.join(", ")}`,
+                        onConfirm: doSave,
+                      });
+                    } else {
+                      doSave();
+                    }
+                  } else {
+                    // Not received: save to transit/queue
+                    const inTransit = transitGoods.some(
+                      (g) =>
+                        g.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                        (!g.businessId || g.businessId === activeBusinessId),
+                    );
+                    const inQueue = pendingParcels.some(
+                      (p) =>
+                        p.biltyNo?.toLowerCase() === bale.label.toLowerCase() &&
+                        (!p.businessId || p.businessId === activeBusinessId),
+                    );
+                    if (!inTransit && !inQueue) {
+                      if (bale.notReceivedTarget === "transit") {
+                        setTransitGoods((prev) => [
+                          {
+                            id: Date.now(),
+                            biltyNo: bale.label,
+                            transportName:
+                              (matchedDetails as TransitRecord)
+                                ?.transportName || "",
+                            supplierName:
+                              (matchedDetails as PendingParcel)?.supplier || "",
+                            itemName: bale.items[0]?.itemName || "",
+                            itemCategory: bale.items[0]?.category || "",
+                            packages: "1",
+                            date: new Date().toISOString().split("T")[0],
+                            addedBy: currentUser.username,
+                            businessId: activeBusinessId,
+                            customData: {},
+                          },
+                          ...prev,
+                        ]);
+                      } else {
+                        setPendingParcels((prev) => [
+                          {
+                            id: Date.now(),
+                            biltyNo: bale.label,
+                            transportName:
+                              (matchedDetails as TransitRecord)
+                                ?.transportName || "",
+                            packages: "1",
+                            dateReceived: new Date()
+                              .toISOString()
+                              .split("T")[0],
+                            businessId: activeBusinessId,
+                            itemName: bale.items[0]?.itemName || "",
+                            itemCategory: bale.items[0]?.category || "",
+                            customData: {},
+                          },
+                          ...prev,
+                        ]);
+                      }
+                    }
+                    setTransactions((prev) => [
+                      {
+                        id: Date.now(),
+                        type: "INWARD_PENDING" as const,
+                        biltyNo: bale.label,
+                        businessId: activeBusinessId,
+                        date: new Date().toISOString().split("T")[0],
+                        user: currentUser.username,
+                        notes: `Not received — saved to ${bale.notReceivedTarget}`,
+                      },
+                      ...prev,
+                    ]);
+                    const updated = [...perBaleData];
+                    updated[activeBaleIdx] = {
+                      ...updated[activeBaleIdx],
+                      locked: true,
+                      lockedBy: currentUser.username,
+                      lockedDate: new Date().toISOString().split("T")[0],
+                    };
+                    setPerBaleData(updated);
+                    showNotification(
+                      `Bale ${bale.label} marked pending and saved to ${bale.notReceivedTarget}`,
+                      "success",
+                    );
+                  }
+                }}
+                className="w-full bg-green-600 text-white font-black py-3 rounded-2xl uppercase tracking-widest text-xs shadow hover:bg-green-700 transition-colors"
+              >
+                💾 Save Bale {activeBaleIdx + 1} —{" "}
+                {perBaleData[activeBaleIdx]?.label}
+              </button>
+            </div>
+          )}
           {/* Save All Bales Button */}
           <div className="px-6 pb-6">
             <button
@@ -2919,7 +3289,7 @@ function InwardTab({
                 for (const bale of perBaleData) {
                   if (bale.locked) continue;
                   if (bale.received) {
-                    // Auto-create inventory items
+                    // Fix 6: Only create inventory items after posting (no pre-creation)
                     for (const itm of bale.items) {
                       if (itm.itemName && itm.category) {
                         const exists = Object.values(inventory).some(
@@ -7346,107 +7716,189 @@ function ItemHistoryPanel({
                 No transactions recorded yet
               </p>
             ) : (
-              <div className="space-y-3">
-                {itemTxs.map((tx) => (
-                  <div key={tx.id} className="flex gap-4">
-                    <div className="flex flex-col items-center">
-                      <div
-                        className={`w-3 h-3 rounded-full mt-1.5 shrink-0 ${dotColor(tx.type)}`}
-                      />
-                      <div className="w-0.5 bg-gray-200 flex-1 mt-1" />
-                    </div>
-                    <div className="pb-4 flex-1">
-                      <div className="flex items-start justify-between gap-2">
+              <div className="space-y-4">
+                {/* Fix 8: Group inward entries by bilty number */}
+                {(() => {
+                  const inwardTxs = itemTxs.filter(
+                    (tx) =>
+                      tx.type === "INWARD" ||
+                      tx.type === "OPENING_STOCK" ||
+                      tx.type === "DIRECT_STOCK",
+                  );
+                  const transferTxs = itemTxs.filter(
+                    (tx) => tx.type === "transfer",
+                  );
+                  const otherTxs = itemTxs.filter(
+                    (tx) =>
+                      tx.type !== "INWARD" &&
+                      tx.type !== "OPENING_STOCK" &&
+                      tx.type !== "DIRECT_STOCK" &&
+                      tx.type !== "transfer",
+                  );
+                  return (
+                    <>
+                      {inwardTxs.length > 0 && (
                         <div>
-                          {(tx.type === "INWARD" ||
-                            tx.type === "OPENING_STOCK" ||
-                            tx.type === "DIRECT_STOCK") && (
-                            <div className="space-y-1">
-                              <p className="font-black text-sm text-green-700">
-                                ✅ Stock Added — {tx.itemsCount ?? "?"} pcs
-                              </p>
-                              {tx.biltyNo && (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-green-100 text-green-800 px-2.5 py-1 rounded-full border border-green-200">
-                                  📦 Bilty: {tx.biltyNo}
-                                </span>
-                              )}
-                              {tx.baleItemsList &&
-                                tx.baleItemsList.length > 0 && (
-                                  <div className="mt-2 space-y-1">
-                                    {tx.baleItemsList.map((bi, biIdx) => (
-                                      <div
-                                        key={`${bi.itemName}-${bi.category}-${biIdx}`}
-                                        className="bg-green-50 border border-green-100 rounded-xl p-2 text-[10px] font-bold text-gray-700"
-                                      >
-                                        <span className="text-gray-900">
-                                          {bi.itemName}
-                                        </span>
-                                        <span className="text-gray-400 ml-1">
-                                          ({bi.category})
-                                        </span>
-                                        <span className="ml-2 text-green-700">
-                                          Qty: {bi.qty}
-                                        </span>
-                                        <div className="flex gap-1 flex-wrap mt-1">
-                                          {(bi.shopQty || 0) > 0 && (
-                                            <span className="text-[9px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-md border border-blue-100">
-                                              🏪 Shop: {bi.shopQty}
-                                            </span>
-                                          )}
-                                          {Object.entries(bi.godownQuants || {})
-                                            .filter(([, v]) => (v || 0) > 0)
-                                            .map(([g, v]) => (
-                                              <span
-                                                key={g}
-                                                className="text-[9px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-md border border-amber-100"
-                                              >
-                                                🏭 {g}: {v}
-                                              </span>
-                                            ))}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                            </div>
-                          )}
-                          {tx.type === "transfer" && (
-                            <div className="space-y-1">
-                              <p className="font-black text-sm text-purple-700">
-                                🔄 Transferred {tx.itemsCount ?? "?"} pcs
-                              </p>
-                              <p className="text-[11px] font-bold text-purple-600">
-                                {tx.fromLocation} → {tx.toLocation}
-                              </p>
-                              {tx.subCategory && (
-                                <p className="text-[10px] text-gray-500">
-                                  Specs: <b>{tx.subCategory}</b>
-                                </p>
-                              )}
-                            </div>
-                          )}
-                          {tx.type === "SALE" && (
-                            <p className="font-black text-sm text-red-700">
-                              💰 Sold {tx.itemsCount ?? "?"} pcs from Shop
-                            </p>
-                          )}
-                          {tx.type === "STOCK_OVERWRITE" && (
-                            <p className="font-black text-sm text-gray-600">
-                              ⚙️ Stock adjusted
-                            </p>
-                          )}
-                          <p className="text-[10px] font-bold text-gray-400 mt-1">
-                            By{" "}
-                            <b className="text-gray-600">
-                              {tx.transferredBy || tx.user || "?"}
-                            </b>{" "}
-                            · {tx.date?.split("T")[0] || tx.date}
+                          <p className="text-[9px] font-black uppercase text-green-600 tracking-widest mb-2">
+                            Stock Receipts by Bilty
                           </p>
+                          <div className="space-y-3">
+                            {inwardTxs.map((tx) => (
+                              <div key={tx.id} className="flex gap-4">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-3 h-3 rounded-full mt-1.5 shrink-0 bg-green-500" />
+                                  <div className="w-0.5 bg-gray-200 flex-1 mt-1" />
+                                </div>
+                                <div className="pb-4 flex-1">
+                                  <div className="bg-green-50 border border-green-100 rounded-2xl p-3 space-y-2">
+                                    <div className="flex items-center justify-between flex-wrap gap-2">
+                                      <div>
+                                        <p className="font-black text-sm text-green-700">
+                                          ✅ {tx.itemsCount ?? "?"} pcs added
+                                        </p>
+                                        <p className="text-[10px] font-bold text-gray-400 mt-0.5">
+                                          By{" "}
+                                          <b className="text-gray-600">
+                                            {tx.user || "?"}
+                                          </b>{" "}
+                                          · {tx.date?.split("T")[0] || tx.date}
+                                        </p>
+                                      </div>
+                                      {tx.biltyNo && (
+                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-green-100 text-green-800 px-2.5 py-1 rounded-full border border-green-200">
+                                          📦 {tx.biltyNo}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {tx.baleItemsList &&
+                                      tx.baleItemsList.length > 0 && (
+                                        <div className="space-y-1 pt-1 border-t border-green-200">
+                                          {tx.baleItemsList.map(
+                                            (
+                                              bi: {
+                                                itemName?: string;
+                                                category?: string;
+                                                qty?: number;
+                                                shopQty?: number;
+                                                godownQuants?: Record<
+                                                  string,
+                                                  number
+                                                >;
+                                              },
+                                              biIdx: number,
+                                            ) => (
+                                              <div
+                                                key={`${bi.itemName}-${biIdx}`}
+                                                className="text-[10px] font-bold text-gray-700"
+                                              >
+                                                <span className="text-gray-900">
+                                                  {bi.itemName}
+                                                </span>
+                                                <span className="text-gray-400 ml-1">
+                                                  ({bi.category})
+                                                </span>
+                                                <span className="ml-2 text-green-700">
+                                                  Qty: {bi.qty}
+                                                </span>
+                                                <div className="flex gap-1 flex-wrap mt-1">
+                                                  {(bi.shopQty || 0) > 0 && (
+                                                    <span className="text-[9px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-md border border-blue-100">
+                                                      🏪 Shop: {bi.shopQty}
+                                                    </span>
+                                                  )}
+                                                  {Object.entries(
+                                                    bi.godownQuants || {},
+                                                  )
+                                                    .filter(
+                                                      ([, v]) => (v || 0) > 0,
+                                                    )
+                                                    .map(([g, v]) => (
+                                                      <span
+                                                        key={g}
+                                                        className="text-[9px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-md border border-amber-100"
+                                                      >
+                                                        🏭 {g}: {v}
+                                                      </span>
+                                                    ))}
+                                                </div>
+                                              </div>
+                                            ),
+                                          )}
+                                        </div>
+                                      )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                      )}
+                      {transferTxs.length > 0 && (
+                        <div>
+                          <p className="text-[9px] font-black uppercase text-purple-600 tracking-widest mb-2">
+                            Transfers
+                          </p>
+                          <div className="space-y-3">
+                            {transferTxs.map((tx) => (
+                              <div key={tx.id} className="flex gap-4">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-3 h-3 rounded-full mt-1.5 shrink-0 bg-purple-500" />
+                                  <div className="w-0.5 bg-gray-200 flex-1 mt-1" />
+                                </div>
+                                <div className="pb-4 flex-1">
+                                  <div className="bg-purple-50 border border-purple-100 rounded-2xl p-3">
+                                    <p className="font-black text-sm text-purple-700">
+                                      🔄 {tx.itemsCount ?? "?"} pcs transferred
+                                    </p>
+                                    <p className="text-[11px] font-bold text-purple-600">
+                                      {tx.fromLocation} → {tx.toLocation}
+                                    </p>
+                                    <p className="text-[10px] font-bold text-gray-400 mt-0.5">
+                                      By{" "}
+                                      <b className="text-gray-600">
+                                        {tx.transferredBy || tx.user || "?"}
+                                      </b>{" "}
+                                      · {tx.date?.split("T")[0] || tx.date}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {otherTxs.map((tx) => (
+                        <div key={tx.id} className="flex gap-4">
+                          <div className="flex flex-col items-center">
+                            <div
+                              className={`w-3 h-3 rounded-full mt-1.5 shrink-0 ${dotColor(tx.type)}`}
+                            />
+                            <div className="w-0.5 bg-gray-200 flex-1 mt-1" />
+                          </div>
+                          <div className="pb-4 flex-1">
+                            {tx.type === "SALE" && (
+                              <p className="font-black text-sm text-red-700">
+                                💰 Sold {tx.itemsCount ?? "?"} pcs from Shop
+                              </p>
+                            )}
+                            {tx.type === "STOCK_OVERWRITE" && (
+                              <p className="font-black text-sm text-gray-600">
+                                ⚙️ Stock adjusted
+                              </p>
+                            )}
+                            <p className="text-[10px] font-bold text-gray-400 mt-1">
+                              By{" "}
+                              <b className="text-gray-600">
+                                {tx.transferredBy || tx.user || "?"}
+                              </b>{" "}
+                              · {tx.date?.split("T")[0] || tx.date}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -8026,6 +8478,7 @@ export default function App() {
             activeBusinessId={activeBusinessId}
             transactions={transactions}
             setInventory={setInventory}
+            setConfirmDialog={setConfirmDialog}
           />
         )}
         {activeTab === "opening" && currentUser.role === "admin" && (
