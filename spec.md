@@ -1,78 +1,33 @@
 # StockFlow
 
 ## Current State
-
-StockFlow is a fully client-side React single-page application (SPA) for Indian logistics inventory management. The entire app is in `src/frontend/src/App.tsx` (~5800 lines). There is no backend persistence — all data lives in React state (with manual JSON export/import for backups).
-
-### Architecture
-- **Framework:** React with functional components and hooks only
-- **UI:** Tailwind CSS + shadcn/ui components + lucide-react icons
-- **State:** useState/useEffect only, no external state management
-- **Storage:** In-memory React state; manual JSON backup/restore
-- **AI:** Google Gemini API (user-provided key, stored in localStorage)
-- **Auth:** Local username/password with roles: admin, staff, supplier
-
-### Tabs (navigation)
-1. **Dashboard (Inventory Hub)** — per-godown stock, threshold alerts (red for items at/below threshold with category/sub-categories/godown qty), item click opens timeline history
-2. **Transit Ledger** — bilty entries with duplicate prevention, item category dropdown, Track Live button (if transport has URL configured), admin can rename columns/edit preset data, CSV import
-3. **Arrival Queue** — bilty queue with auto-fill from Transit on bilty match, supplier/item category/item name fields, filters (date, name, category/item), Track button, Open Bale → switches to Inward tab with data pre-filled; saving bilty in Queue removes it from Transit
-4. **Inward Processing** — bilty combo search (pulls from Queue + Transit), auto-fill all fields, Total Goods Qty field with distribution sum validation, item name combo box (dropdown+text, filtered by category, new items auto-saved to inventory), auto-fills sell/purchase price (overwritable), staff cannot see/add purchase price, no duplicate bilty allowed, saving removes bilty from both Transit and Queue
-5. **Opening Stock** (admin only) — enter legacy/pre-app stock, item/category dropdown combo box, sell+purchase price fields
-6. **Transfers** — product search showing item name, sub-categories, per-godown stock; transfer between godowns/shop; New Transfer refresh button; history recorded with person + date
-7. **History Log** — all transactions (inward, transfers), shows bilty numbers, expandable detail view, date range + category/item filters, admin can edit all fields of inward entries (opens full inward form, bilty locked, rest editable, saves as overwrite)
-8. **Admin Settings** — sub-tabs: Godowns (add/rename/delete), Transport Tracking (name→URL mapping), Tab Names (rename all 7 tabs), Transit Columns (rename headings + edit preset field data), Categories (add/edit/remove), Users (add/edit/remove), Bilty Prefixes, AI Settings (Gemini API key input)
-9. **Stock Control** (admin only) — direct stock overwrite, global/per-item thresholds (applied to godown stock only, not shop)
-10. **Sales Tab** — select multiple items/categories to record sales and reduce shop stock
-
-### Key Data Types
-- `InventoryItem`: sku, category, itemName, attributes (sub-categories), shop (qty), godowns (Record<godownName, qty>), saleRate, purchaseRate, businessId, minThreshold
-- `TransitRecord`: id, biltyNo, transportName, supplierName, itemName, itemCategory, packages, date, addedBy, businessId, customData
-- `PendingParcel` (Queue): id, biltyNo, transportName, packages, dateReceived, arrivalDate, businessId, itemName, category, itemCategory, supplier, customData
-- `InwardRecord`: id, biltyNo, dateOpened, openedBy, transport, baleItems[], businessId, createdAt
-- `Transaction`: id, type, biltyNo, businessId, date, user, transportName, itemsCount, sku, itemName, category, notes, fromLocation, toLocation, transferredBy, subCategory
-- `AppUser`: username, password, role (admin/staff/supplier)
-- `Business`: id, name
-- `Category`: name, fields[] (CategoryField with name, type, options)
-
-### Role Restrictions
-- **supplier**: only sees own Transit entries; no access to Dashboard, Queue, Inward, Transfer, History, Settings
-- **staff**: view-only in Transit (no add); no purchase price in Inward; no Opening Stock; no Admin Settings; no Stock Control
-- **admin**: full access to all tabs and features
-
-### Defaults
-- Users: admin/password, staff/password, supplier/password
-- Business: `{ id: 'default', name: 'StockManager Default' }`
-- Categories: Safi, Lungi, Napkin
-- Godowns: Main Godown, Side Godown
-- Bilty Prefixes: sola, erob, cheb, 0
-
-### AI Integration
-- Gemini API: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=...`
-- Used for: inventory insights, transaction audit, text-to-JSON extraction in Inward tab
-- Key stored in localStorage, configurable in Admin Settings > AI Settings
-- Graceful fallback messages if key missing
-
-### Multi-Business
-- Profile system with isolated data per business
-- Create, edit, delete, switch businesses
-
----
+- Transfer tab has a 'Transfer Another Item' button that appears only after a successful transfer (transferDone state). It resets search/selectedSku/qty.
+- Transit tab: packages is a plain string field with no package postfix auto-expansion logic. Duplicate bilty prevention exists.
+- Queue (WarehouseTab): packages is a plain string, no auto-expand bale tab logic, no Received/Pending per-bale status.
+- Inward tab: one `totalQty` field for whole bale. No per-item 'Total Qty in Bale' field. Distribution done via shopQty + godownQuants per item.
+- History tab: bilty numbers are plain `<span>` elements with no click handler. No bilty journey panel exists.
 
 ## Requested Changes (Diff)
 
 ### Add
-- (none — this is a summary reinitiation, no new features requested)
+- **Transfer tab:** Standalone refresh/reset icon button (always visible, not just after transfer) that clears selectedSku and search so user can re-select a different item
+- **Transit tab:** Package count field (numeric) in the Transit form. When packages > 1, instead of saving one entry, auto-create N entries with bilty postfix: `biltyX{N}(1)`, `biltyX{N}(2)`, etc. Each child entry inherits same item name, supplier, package number from the main form
+- **Queue tab:** When a bilty with packages > 1 is entered/auto-filled from Transit, auto-expand into N sub-entries (tabs/rows). Each shows: unique bilty label (sola1011X5(1)...), item category, item name (editable per bale), and a Received/Pending status toggle. Saving: Received bales go to Queue as separate bilty entries, Pending bales go to Transit as separate bilty entries
+- **Inward tab:** Permanent 'Total Qty in Bale' field placed after item name in the inward form. Validation: sum of ALL items' godown + shop distributions across the whole bale must equal this Total Qty in Bale value
+- **History tab:** Bilty numbers become clickable. Clicking opens a side panel/modal showing the full journey: Transit (date + entered by), Queue (date + entered by), Inward (date + opened by), item name with sub-categories, total qty, and godown/shop distribution split
 
 ### Modify
-- (none)
+- **Transfer tab:** Remove the post-transfer 'Transfer Another Item' button (replace with always-visible refresh icon near item search/selection area)
+- **Inward tab:** Existing `totalQty` field renamed/repurposed to 'Total Qty in Bale'. Validation updated to check sum of ALL baleItems' (shopQty + all godownQuants) equals this field
+- **Queue tab:** When packages > 1, the single form entry is replaced by the expanded bale tab UI
 
 ### Remove
-- (none)
-
----
+- Post-transfer success banner with 'Transfer Another Item' button (replaced by always-visible refresh icon)
+- Queue bale tab fields: stock to godown, stock to shop, qty per bale (not needed at queue stage — just track receipt)
 
 ## Implementation Plan
-
-This spec.md is a fresh summary reinitiation. No code changes are planned at this time. The current codebase reflects all previously implemented features as described in the Current State section above.
-
-Next development iteration should reference this spec as the authoritative baseline.
+1. **Transfer tab:** Add a small RefreshCw icon button always visible next to the item search area. On click: reset selectedSku, search, qty, transferDone. Remove the post-transfer banner button (keep the success message but remove the button or simplify).
+2. **Transit tab:** Add numeric `packageCount` field to form. In handleAdd: if packageCount > 1, generate N entries with bilty labels `{biltyNo}X{N}({i})` each with same supplier, itemName, itemCategory, packageCount. If packageCount is 1 or empty, save single entry as before. Keep duplicate bilty check (each generated label is unique).
+3. **Queue tab:** Add `packageCount` to form state. When bilty auto-fills from Transit and packageCount > 1, show an expanded UI with N bale rows, each having a unique bilty label, item category (combo), item name (combo), and a Received/Pending toggle. On save: Received bales → pendingParcels (Queue), Pending bales → transitGoods (Transit) as unique entries.
+4. **Inward tab:** Rename `totalQty` label to 'Total Qty in Bale'. Place after item name section. Validate sum of all baleItems shopQty + all godownQuants equals totalQty. Show per-item subtotal and bale-level total in the validation message.
+5. **History tab:** Add `selectedBilty` state and panel. Make bilty `<span>` elements clickable with onClick. Build a lookup function that finds matching records in transitGoods, pendingParcels, and transactions (inward type) by biltyNo. Show the journey timeline in a modal/drawer with all requested fields including distribution.

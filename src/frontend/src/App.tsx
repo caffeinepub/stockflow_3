@@ -632,6 +632,7 @@ function TransitTab({
     if (!biltyNumber) return showNotification("Bilty number required", "error");
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
+    const pkgCount = Number(form.packages) || 1;
     const isDupeTransit = (transitGoods || []).some(
       (g) =>
         (!g.businessId || g.businessId === activeBusinessId) &&
@@ -642,16 +643,39 @@ function TransitTab({
         `Bilty ${bNo} already exists in Transit!`,
         "error",
       );
-    setTransitGoods((prev) => [
-      {
-        id: Date.now(),
-        biltyNo: bNo,
-        addedBy: currentUser.username,
-        businessId: activeBusinessId,
-        ...form,
-      },
-      ...prev,
-    ]);
+    if (pkgCount > 1) {
+      const newEntries: TransitRecord[] = [];
+      for (let i = 1; i <= pkgCount; i++) {
+        const label = `${bNo}X${pkgCount}(${i})`;
+        const alreadyExists = (transitGoods || []).some(
+          (g) =>
+            (!g.businessId || g.businessId === activeBusinessId) &&
+            g.biltyNo?.toLowerCase() === label.toLowerCase(),
+        );
+        if (!alreadyExists) {
+          newEntries.push({
+            id: Date.now() + i,
+            biltyNo: label,
+            addedBy: currentUser.username,
+            businessId: activeBusinessId,
+            ...form,
+            packages: String(pkgCount),
+          });
+        }
+      }
+      setTransitGoods((prev) => [...newEntries, ...prev]);
+    } else {
+      setTransitGoods((prev) => [
+        {
+          id: Date.now(),
+          biltyNo: bNo,
+          addedBy: currentUser.username,
+          businessId: activeBusinessId,
+          ...form,
+        },
+        ...prev,
+      ]);
+    }
     setShowForm(false);
     setBiltyNumber("");
     setForm({
@@ -663,7 +687,12 @@ function TransitTab({
       date: new Date().toISOString().split("T")[0],
       customData: {},
     });
-    showNotification("Saved Transit Entry", "success");
+    showNotification(
+      pkgCount > 1
+        ? `Saved ${pkgCount} bale entries to Transit`
+        : "Saved Transit Entry",
+      "success",
+    );
   };
 
   let filtered = (transitGoods || []).filter((g) => {
@@ -1039,6 +1068,34 @@ function WarehouseTab({
   const [filterCategory, setFilterCategory] = useState("");
   const [filterItemName, setFilterItemName] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [baleRows, setBaleRows] = useState<
+    {
+      biltyLabel: string;
+      itemCategory: string;
+      itemName: string;
+      status: "received" | "pending";
+    }[]
+  >([]);
+
+  // Generate bale rows when biltyNumber or packages changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only run on package/bilty change
+  useEffect(() => {
+    const bNo =
+      biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
+    const pkgCount = Number(form.packages) || 0;
+    if (biltyNumber && pkgCount > 1) {
+      setBaleRows(
+        Array.from({ length: pkgCount }, (_, i) => ({
+          biltyLabel: `${bNo}X${pkgCount}(${i + 1})`,
+          itemCategory: form.itemCategory,
+          itemName: form.itemName,
+          status: "received" as const,
+        })),
+      );
+    } else {
+      setBaleRows([]);
+    }
+  }, [biltyNumber, biltyPrefix, form.packages]);
 
   // Auto-fill from Transit when bilty matches
   // biome-ignore lint/correctness/useExhaustiveDependencies: only run on bilty change
@@ -1072,6 +1129,71 @@ function WarehouseTab({
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
     const queueBiltyList = existingQueueBiltyNos ?? [];
+    const pkgCount = Number(form.packages) || 1;
+
+    if (pkgCount > 1 && baleRows.length > 0) {
+      // Save received bales to Queue, pending bales to Transit
+      const receivedBales = baleRows.filter((r) => r.status === "received");
+      const pendingBales = baleRows.filter((r) => r.status === "pending");
+      setPendingParcels((prev) => [
+        ...receivedBales.map((r, i) => ({
+          id: Date.now() + i,
+          biltyNo: r.biltyLabel,
+          businessId: activeBusinessId,
+          transportName: form.transportName,
+          supplier: form.supplier,
+          itemCategory: r.itemCategory,
+          itemName: r.itemName,
+          packages: String(pkgCount),
+          dateReceived: form.dateReceived,
+          arrivalDate: form.arrivalDate,
+          customData: form.customData,
+        })),
+        ...prev,
+      ]);
+      if (setTransitGoods && pendingBales.length > 0) {
+        setTransitGoods((prev) => [
+          ...pendingBales.map((r, i) => ({
+            id: Date.now() + 1000 + i,
+            biltyNo: r.biltyLabel,
+            businessId: activeBusinessId,
+            transportName: form.transportName,
+            supplierName: form.supplier,
+            itemCategory: r.itemCategory,
+            itemName: r.itemName,
+            packages: String(pkgCount),
+            date: form.arrivalDate,
+            addedBy: "Queue",
+            customData: form.customData,
+          })),
+          ...prev,
+        ]);
+      }
+      // Remove original bilty from transit
+      if (setTransitGoods) {
+        setTransitGoods((prev) =>
+          prev.filter((g) => g.biltyNo?.toLowerCase() !== bNo.toLowerCase()),
+        );
+      }
+      setBaleRows([]);
+      setBiltyNumber("");
+      setForm({
+        transportName: "",
+        supplier: "",
+        itemCategory: "",
+        itemName: "",
+        packages: "",
+        dateReceived: new Date().toISOString().split("T")[0],
+        arrivalDate: new Date().toISOString().split("T")[0],
+        customData: {},
+      });
+      showNotification(
+        `${receivedBales.length} received, ${pendingBales.length} pending`,
+        "success",
+      );
+      return;
+    }
+
     if (queueBiltyList.some((b) => b.toLowerCase() === bNo.toLowerCase())) {
       return showNotification(`Bilty ${bNo} already exists in Queue!`, "error");
     }
@@ -1236,9 +1358,85 @@ function WarehouseTab({
           type="submit"
           className="w-full bg-amber-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-xl hover:bg-amber-700 transition-transform active:scale-95"
         >
-          Log Arrival to Queue
+          {baleRows.length > 0
+            ? `Save ${baleRows.length} Bales`
+            : "Log Arrival to Queue"}
         </button>
       </form>
+
+      {baleRows.length > 0 && (
+        <div className="bg-white rounded-[2rem] border border-amber-200 shadow-lg overflow-hidden animate-fade-in-down">
+          <div className="bg-amber-600 text-white px-6 py-4 flex items-center justify-between">
+            <h3 className="font-black uppercase tracking-widest text-xs">
+              Bale Breakdown ({baleRows.length} bales)
+            </h3>
+            <span className="text-amber-200 text-[10px] font-bold">
+              Mark each bale as Received or Pending
+            </span>
+          </div>
+          <div className="divide-y">
+            {baleRows.map((row, idx) => (
+              <div
+                key={row.biltyLabel}
+                className="p-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center"
+              >
+                <span className="text-xs font-black text-gray-700 uppercase w-40 shrink-0">
+                  {row.biltyLabel}
+                </span>
+                <select
+                  value={row.itemCategory}
+                  onChange={(e) => {
+                    const updated = [...baleRows];
+                    updated[idx] = {
+                      ...updated[idx],
+                      itemCategory: e.target.value,
+                    };
+                    setBaleRows(updated);
+                  }}
+                  className="border rounded-xl p-2 text-xs font-bold bg-gray-50 outline-none flex-1"
+                >
+                  <option value="">Category</option>
+                  {(categories || []).map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <ItemNameCombo
+                  category={row.itemCategory}
+                  value={row.itemName}
+                  onChange={(val) => {
+                    const updated = [...baleRows];
+                    updated[idx] = { ...updated[idx], itemName: val };
+                    setBaleRows(updated);
+                  }}
+                  inventory={inventory || {}}
+                  activeBusinessId={activeBusinessId}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = [...baleRows];
+                    updated[idx] = {
+                      ...updated[idx],
+                      status:
+                        row.status === "received" ? "pending" : "received",
+                    };
+                    setBaleRows(updated);
+                  }}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shrink-0 transition-colors ${
+                    row.status === "received"
+                      ? "bg-green-100 text-green-700 border border-green-300"
+                      : "bg-orange-100 text-orange-700 border border-orange-300"
+                  }`}
+                >
+                  {row.status === "received" ? "✓ Received" : "⏳ Pending"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -2121,6 +2319,55 @@ function InwardTab({
               activeBusinessId={activeBusinessId}
             />
           </div>
+          {/* Total Qty in Bale - permanent, always shown */}
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+            <div className="flex items-start gap-4">
+              <div className="flex-1">
+                <p className="text-[10px] font-black uppercase text-blue-800 ml-1">
+                  Total Qty in Bale
+                </p>
+                <input
+                  type="number"
+                  value={totalQty}
+                  onChange={(e) => setTotalQty(e.target.value)}
+                  placeholder="Enter total qty in this bale"
+                  className="w-full border border-blue-300 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+                />
+              </div>
+              <div className="shrink-0 pt-5">
+                {totalQty &&
+                  (() => {
+                    const savedTotal = baleItems.reduce(
+                      (sum, i) =>
+                        sum +
+                        (Number(i.shopQty) || 0) +
+                        Object.values(i.godownQuants).reduce(
+                          (a, b) => a + Number(b || 0),
+                          0,
+                        ),
+                      0,
+                    );
+                    const currentFormTotal =
+                      (Number(itemForm.shopQty) || 0) +
+                      Object.values(itemForm.godownQuants).reduce(
+                        (a, b) => a + Number(b || 0),
+                        0,
+                      );
+                    const grandTotal = savedTotal + currentFormTotal;
+                    const expected = Number(totalQty);
+                    return grandTotal === expected ? (
+                      <span className="text-green-700 text-[10px] font-black bg-green-100 border border-green-300 px-3 py-2 rounded-xl block">
+                        ✓ {grandTotal}/{expected}
+                      </span>
+                    ) : (
+                      <span className="text-orange-700 text-[10px] font-black bg-orange-100 border border-orange-300 px-3 py-2 rounded-xl block">
+                        ⚠ {grandTotal}/{expected}
+                      </span>
+                    );
+                  })()}
+              </div>
+            </div>
+          </div>
           {selectedCat && (
             <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {selectedCat.fields.map((f) => (
@@ -2333,40 +2580,6 @@ function InwardTab({
                   className="w-full border rounded-xl p-2.5 font-bold outline-none focus:ring-2 focus:ring-green-500 bg-white text-sm"
                 />
               </div>
-              <div>
-                <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-                  Total Qty (Expected)
-                </p>
-                <input
-                  type="number"
-                  value={totalQty}
-                  onChange={(e) => setTotalQty(e.target.value)}
-                  placeholder="Expected total"
-                  className="w-full border rounded-xl p-2.5 font-bold outline-none focus:ring-2 focus:ring-green-500 bg-white text-sm"
-                />
-                {totalQty &&
-                  (() => {
-                    const actual = baleItems.reduce(
-                      (sum, i) =>
-                        sum +
-                        (Number(i.shopQty) || 0) +
-                        Object.values(i.godownQuants).reduce(
-                          (a, b) => a + Number(b || 0),
-                          0,
-                        ),
-                      0,
-                    );
-                    return Number(totalQty) !== actual ? (
-                      <p className="text-orange-600 text-[10px] font-bold mt-1">
-                        ⚠ Expected {totalQty}, entered {actual}
-                      </p>
-                    ) : (
-                      <p className="text-green-600 text-[10px] font-bold mt-1">
-                        ✓ Totals match
-                      </p>
-                    );
-                  })()}
-              </div>
             </div>
             <button
               type="button"
@@ -2411,7 +2624,6 @@ function TransferTab({
   const [search, setSearch] = useState("");
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
   const [qty, setQty] = useState("");
-  const [transferDone, setTransferDone] = useState(false);
 
   const filteredSkus = Object.keys(inventory || {})
     .filter((s) => {
@@ -2474,7 +2686,6 @@ function TransferTab({
     setQty("");
     setSelectedSku(null);
     setSearch("");
-    setTransferDone(true);
   };
 
   return (
@@ -2500,9 +2711,23 @@ function TransferTab({
       </div>
       <div className="bg-white p-8 rounded-[2.5rem] border shadow-xl space-y-6">
         <div className="relative">
-          <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-            Search Product
-          </p>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+              Search Product
+            </p>
+            <button
+              type="button"
+              title="Reset selection"
+              onClick={() => {
+                setSelectedSku(null);
+                setSearch("");
+                setQty("");
+              }}
+              className="p-1.5 bg-gray-100 hover:bg-purple-100 text-gray-400 hover:text-purple-600 rounded-lg transition-colors"
+            >
+              <RefreshCw size={13} />
+            </button>
+          </div>
           <input
             type="text"
             value={search}
@@ -2646,27 +2871,6 @@ function TransferTab({
           </div>
         )}
       </div>
-      {transferDone && (
-        <div className="bg-green-50 border border-green-200 rounded-3xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 animate-fade-in-down">
-          <div className="flex items-center gap-3">
-            <span className="text-green-600 font-black text-sm">
-              ✓ Transfer completed successfully!
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setTransferDone(false);
-              setSearch("");
-              setSelectedSku(null);
-              setQty("");
-            }}
-            className="flex items-center gap-2 bg-purple-600 text-white font-black px-6 py-3 rounded-2xl text-xs uppercase tracking-widest shadow-md"
-          >
-            <RefreshCw size={14} /> Transfer Another Item
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -2679,6 +2883,8 @@ function HistoryTab({
   activeBusinessId,
   currentUser,
   inventory,
+  transitGoods,
+  pendingParcels,
 }: {
   transactions: Transaction[];
   setConfirmDialog: (
@@ -2688,6 +2894,8 @@ function HistoryTab({
   activeBusinessId: string;
   currentUser: AppUser;
   inventory: Record<string, InventoryItem>;
+  transitGoods?: TransitRecord[];
+  pendingParcels?: PendingParcel[];
 }) {
   const [search, setSearch] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -2695,6 +2903,9 @@ function HistoryTab({
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [selectedBiltyForHistory, setSelectedBiltyForHistory] = useState<
+    string | null
+  >(null);
 
   const toggleRow = (id: number) => {
     setExpandedRows((prev) => {
@@ -2813,9 +3024,16 @@ function HistoryTab({
                         {isTransfer ? "Transfer" : t.type}
                       </span>
                       {t.biltyNo && (
-                        <span className="font-black text-gray-900 uppercase text-lg tracking-tight">
+                        <button
+                          type="button"
+                          className="font-black text-gray-900 uppercase text-lg tracking-tight cursor-pointer hover:text-blue-600 hover:underline transition-colors bg-transparent border-0 p-0"
+                          title="Click to view bilty journey"
+                          onClick={() =>
+                            setSelectedBiltyForHistory(t.biltyNo || null)
+                          }
+                        >
                           {t.biltyNo}
-                        </span>
+                        </button>
                       )}
                       {isTransfer && t.itemName && (
                         <span className="font-black text-gray-800 text-sm tracking-tight">
@@ -3122,6 +3340,206 @@ function HistoryTab({
           </div>
         </div>
       )}
+
+      {/* Bilty Journey Modal */}
+      {selectedBiltyForHistory &&
+        (() => {
+          const bNo = selectedBiltyForHistory;
+          const transitEntry = (transitGoods || []).find(
+            (g) =>
+              g.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (!g.businessId || g.businessId === activeBusinessId),
+          );
+          const queueEntry = (pendingParcels || []).find(
+            (p) =>
+              p.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (!p.businessId || p.businessId === activeBusinessId),
+          );
+          const inwardEntry = transactions.find(
+            (t) =>
+              t.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (t.type === "INWARD" || t.type === "inward") &&
+              (!t.businessId || t.businessId === activeBusinessId),
+          );
+          return (
+            <div className="fixed inset-0 bg-gray-900/60 z-[100] flex items-center justify-center p-4">
+              <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                      Bilty Journey
+                    </p>
+                    <h3 className="font-black text-gray-900 text-xl uppercase tracking-tight">
+                      {bNo}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBiltyForHistory(null)}
+                    className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="space-y-4">
+                  {/* Transit Stage */}
+                  <div
+                    className={`p-4 rounded-2xl border ${transitEntry ? "bg-indigo-50 border-indigo-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${transitEntry ? "bg-indigo-600 text-white" : "bg-gray-300 text-gray-600"}`}
+                      >
+                        1. Transit
+                      </span>
+                      {transitEntry && (
+                        <span className="text-[10px] font-bold text-indigo-700">
+                          {transitEntry.date}
+                        </span>
+                      )}
+                    </div>
+                    {transitEntry ? (
+                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
+                        <p>
+                          Added by: <b>{transitEntry.addedBy}</b>
+                        </p>
+                        {transitEntry.transportName && (
+                          <p>
+                            Transport: <b>{transitEntry.transportName}</b>
+                          </p>
+                        )}
+                        {transitEntry.supplierName && (
+                          <p>
+                            Supplier: <b>{transitEntry.supplierName}</b>
+                          </p>
+                        )}
+                        {transitEntry.itemName && (
+                          <p>
+                            Item: <b>{transitEntry.itemName}</b>
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-gray-400 font-bold">
+                        No Transit record found
+                      </p>
+                    )}
+                  </div>
+                  {/* Queue Stage */}
+                  <div
+                    className={`p-4 rounded-2xl border ${queueEntry ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${queueEntry ? "bg-amber-600 text-white" : "bg-gray-300 text-gray-600"}`}
+                      >
+                        2. Queue
+                      </span>
+                      {queueEntry && (
+                        <span className="text-[10px] font-bold text-amber-700">
+                          {queueEntry.arrivalDate || queueEntry.dateReceived}
+                        </span>
+                      )}
+                    </div>
+                    {queueEntry ? (
+                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
+                        {queueEntry.supplier && (
+                          <p>
+                            Supplier: <b>{queueEntry.supplier}</b>
+                          </p>
+                        )}
+                        {queueEntry.itemCategory && (
+                          <p>
+                            Category: <b>{queueEntry.itemCategory}</b>
+                          </p>
+                        )}
+                        {queueEntry.itemName && (
+                          <p>
+                            Item: <b>{queueEntry.itemName}</b>
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-gray-400 font-bold">
+                        No Queue record found
+                      </p>
+                    )}
+                  </div>
+                  {/* Inward Stage */}
+                  <div
+                    className={`p-4 rounded-2xl border ${inwardEntry ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-100 opacity-50"}`}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className={`text-[9px] font-black px-2 py-1 rounded-full uppercase ${inwardEntry ? "bg-green-600 text-white" : "bg-gray-300 text-gray-600"}`}
+                      >
+                        3. Inward
+                      </span>
+                      {inwardEntry && (
+                        <span className="text-[10px] font-bold text-green-700">
+                          {inwardEntry.date}
+                        </span>
+                      )}
+                    </div>
+                    {inwardEntry ? (
+                      <div className="text-[10px] font-bold text-gray-700 space-y-1">
+                        <p>
+                          Opened by: <b>{inwardEntry.user}</b>
+                        </p>
+                        {inwardEntry.itemName && (
+                          <p>
+                            Item: <b>{inwardEntry.itemName}</b>
+                          </p>
+                        )}
+                        {inwardEntry.category && (
+                          <p>
+                            Category: <b>{inwardEntry.category}</b>
+                          </p>
+                        )}
+                        {inwardEntry.subCategory && (
+                          <p>
+                            Sub-categories: <b>{inwardEntry.subCategory}</b>
+                          </p>
+                        )}
+                        {(inwardEntry.itemsCount ?? 0) > 0 && (
+                          <p>
+                            Total Qty: <b>{inwardEntry.itemsCount} pcs</b>
+                          </p>
+                        )}
+                        {inwardEntry.fromLocation && (
+                          <p>
+                            Godown: <b>{inwardEntry.fromLocation}</b>
+                          </p>
+                        )}
+                        {inwardEntry.toLocation && (
+                          <p>
+                            Shop: <b>{inwardEntry.toLocation}</b>
+                          </p>
+                        )}
+                        {inwardEntry.notes && (
+                          <p className="col-span-2 text-gray-600">
+                            {inwardEntry.notes}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-gray-400 font-bold">
+                        No Inward record found
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBiltyForHistory(null)}
+                  className="w-full mt-6 bg-gray-100 text-gray-700 font-black py-3 rounded-2xl uppercase text-[10px] tracking-widest hover:bg-gray-200 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }
@@ -6130,6 +6548,8 @@ export default function App() {
             activeBusinessId={activeBusinessId}
             currentUser={currentUser}
             inventory={inventory}
+            transitGoods={transitGoods}
+            pendingParcels={pendingParcels}
           />
         )}
         {activeTab === "settings" && currentUser.role === "admin" && (
