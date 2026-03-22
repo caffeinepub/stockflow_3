@@ -1115,6 +1115,7 @@ function WarehouseTab({
   inventory,
   moveToQueueData,
   clearMoveToQueueData,
+  transactions,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -1135,6 +1136,7 @@ function WarehouseTab({
   inventory?: Record<string, InventoryItem>;
   moveToQueueData?: TransitRecord | null;
   clearMoveToQueueData?: () => void;
+  transactions?: Transaction[];
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1170,14 +1172,36 @@ function WarehouseTab({
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
     const pkgCount = Number(form.packages) || 0;
     if (biltyNumber && pkgCount > 1) {
-      setBaleRows(
-        Array.from({ length: pkgCount }, (_, i) => ({
-          biltyLabel: `${bNo}X${pkgCount}(${i + 1})`,
+      const rows = Array.from({ length: pkgCount }, (_, i) => {
+        const label = `${bNo}X${pkgCount}(${i + 1})`;
+        const labelLower = label.toLowerCase();
+        // Skip bales already in Queue (pendingParcels)
+        const inQueue = pendingParcels.some(
+          (p) =>
+            p.biltyNo?.toLowerCase() === labelLower &&
+            (!p.businessId || p.businessId === activeBusinessId),
+        );
+        // Skip bales already processed in Inward (transactions)
+        const inInward = (transactions || []).some(
+          (t) =>
+            t.type === "INWARD" &&
+            t.biltyNo?.toLowerCase() === labelLower &&
+            (!t.businessId || t.businessId === activeBusinessId),
+        );
+        if (inQueue || inInward) return null;
+        return {
+          biltyLabel: label,
           itemCategory: form.itemCategory,
           itemName: form.itemName,
           status: "received" as const,
-        })),
-      );
+        };
+      }).filter(Boolean) as {
+        biltyLabel: string;
+        itemCategory: string;
+        itemName: string;
+        status: "received" | "pending";
+      }[];
+      setBaleRows(rows);
     } else {
       setBaleRows([]);
     }
@@ -1936,6 +1960,7 @@ function InwardTab({
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
   const [baleItems, setBaleItems] = useState<BaleItem[]>([]);
+  const [isNewItemMode, setIsNewItemMode] = useState(false);
   const [itemForm, setItemForm] = useState({
     category: "",
     itemName: "",
@@ -2042,6 +2067,12 @@ function InwardTab({
       setPerBaleData([]);
     }
   }, [biltyNumber, biltyPrefix, inwardPackages]);
+
+  // Reset isNewItemMode when category changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional reset on category change
+  useEffect(() => {
+    setIsNewItemMode(false);
+  }, [itemForm.category]);
 
   const handleLookup = (pPrefix: string, pNumber: string) => {
     const bNo = pPrefix === "0" ? pNumber : `${pPrefix}-${pNumber}`;
@@ -3286,6 +3317,11 @@ function InwardTab({
                   }
                 }
                 // Process each bale (skip locked ones - already in inventory)
+                // Collect all new transactions for a single batched state update
+                const batchedInwardTxns: Transaction[] = [];
+                const batchedPendingTxns: Transaction[] = [];
+                const labelsToRemoveFromTransit: string[] = [];
+                const labelsToRemoveFromQueue: string[] = [];
                 for (const bale of perBaleData) {
                   if (bale.locked) continue;
                   if (bale.received) {
@@ -3354,69 +3390,54 @@ function InwardTab({
                           );
                       }
                     }
-                    // Create transaction
-                    setTransactions((prev) => [
-                      {
-                        id: Date.now() + Math.random(),
-                        type: "INWARD",
-                        biltyNo: bale.label,
-                        businessId: activeBusinessId,
-                        date: new Date().toISOString().split("T")[0],
-                        user: currentUser.username,
-                        transportName:
-                          (matchedDetails as TransitRecord)?.transportName ||
-                          "",
-                        itemsCount: bale.totalQty
-                          ? Number(bale.totalQty)
-                          : bale.items.reduce(
-                              (s, i) =>
-                                s +
-                                (Number(i.shopQty) || 0) +
-                                Object.values(i.godownQuants).reduce(
-                                  (a, b) => a + Number(b || 0),
-                                  0,
-                                ),
-                              0,
-                            ),
-                        totalQtyInBale: bale.totalQty
-                          ? Number(bale.totalQty)
-                          : undefined,
-                        baleItemsList: bale.items.map((i) => ({
-                          itemName: i.itemName,
-                          category: i.category,
-                          attributes: { ...i.attributes },
-                          shopQty: Number(i.shopQty) || 0,
-                          godownQuants: Object.fromEntries(
-                            Object.entries(i.godownQuants).map(([g, q]) => [
-                              g,
-                              Number(q) || 0,
-                            ]),
+                    // Collect for batch transaction update
+                    batchedInwardTxns.push({
+                      id: Date.now() + Math.random(),
+                      type: "INWARD",
+                      biltyNo: bale.label,
+                      businessId: activeBusinessId,
+                      date: new Date().toISOString().split("T")[0],
+                      user: currentUser.username,
+                      transportName:
+                        (matchedDetails as TransitRecord)?.transportName || "",
+                      itemsCount: bale.totalQty
+                        ? Number(bale.totalQty)
+                        : bale.items.reduce(
+                            (s, i) =>
+                              s +
+                              (Number(i.shopQty) || 0) +
+                              Object.values(i.godownQuants).reduce(
+                                (a, b) => a + Number(b || 0),
+                                0,
+                              ),
+                            0,
                           ),
-                          saleRate: Number(i.saleRate) || 0,
-                          purchaseRate: Number(i.purchaseRate) || 0,
-                          qty:
-                            (Number(i.shopQty) || 0) +
-                            Object.values(i.godownQuants).reduce(
-                              (a, b) => a + Number(b || 0),
-                              0,
-                            ),
-                        })),
-                      },
-                      ...prev,
-                    ]);
-                    // Remove from transit/queue
-                    setTransitGoods((prev) =>
-                      prev.filter(
-                        (g) =>
-                          g.biltyNo?.toLowerCase() !== bale.label.toLowerCase(),
-                      ),
-                    );
-                    setPendingParcels((prev) =>
-                      prev.filter(
-                        (p) =>
-                          p.biltyNo?.toLowerCase() !== bale.label.toLowerCase(),
-                      ),
-                    );
+                      totalQtyInBale: bale.totalQty
+                        ? Number(bale.totalQty)
+                        : undefined,
+                      baleItemsList: bale.items.map((i) => ({
+                        itemName: i.itemName,
+                        category: i.category,
+                        attributes: { ...i.attributes },
+                        shopQty: Number(i.shopQty) || 0,
+                        godownQuants: Object.fromEntries(
+                          Object.entries(i.godownQuants).map(([g, q]) => [
+                            g,
+                            Number(q) || 0,
+                          ]),
+                        ),
+                        saleRate: Number(i.saleRate) || 0,
+                        purchaseRate: Number(i.purchaseRate) || 0,
+                        qty:
+                          (Number(i.shopQty) || 0) +
+                          Object.values(i.godownQuants).reduce(
+                            (a, b) => a + Number(b || 0),
+                            0,
+                          ),
+                      })),
+                    });
+                    labelsToRemoveFromTransit.push(bale.label.toLowerCase());
+                    labelsToRemoveFromQueue.push(bale.label.toLowerCase());
                   } else {
                     // Not received: check if already in transit or queue
                     const inTransit = transitGoods.some(
@@ -3458,6 +3479,8 @@ function InwardTab({
                             transportName:
                               (matchedDetails as TransitRecord)
                                 ?.transportName || "",
+                            supplier:
+                              (matchedDetails as PendingParcel)?.supplier || "",
                             packages: "1",
                             dateReceived: new Date()
                               .toISOString()
@@ -3471,20 +3494,49 @@ function InwardTab({
                         ]);
                       }
                     }
-                    // Record pending in history
-                    setTransactions((prev) => [
-                      {
-                        id: Date.now() + Math.random(),
-                        type: "INWARD_PENDING",
-                        biltyNo: bale.label,
-                        businessId: activeBusinessId,
-                        date: new Date().toISOString().split("T")[0],
-                        user: currentUser.username,
-                        notes: `Not received — saved to ${bale.notReceivedTarget}`,
-                      },
-                      ...prev,
-                    ]);
+                    // Collect pending in history for batch update
+                    batchedPendingTxns.push({
+                      id: Date.now() + Math.random(),
+                      type: "INWARD_PENDING",
+                      biltyNo: bale.label,
+                      businessId: activeBusinessId,
+                      date: new Date().toISOString().split("T")[0],
+                      user: currentUser.username,
+                      notes: `Not received — saved to ${bale.notReceivedTarget}`,
+                    });
                   }
+                }
+                // Single batched state update for all transactions
+                if (
+                  batchedInwardTxns.length > 0 ||
+                  batchedPendingTxns.length > 0
+                ) {
+                  setTransactions((prev) => [
+                    ...batchedInwardTxns,
+                    ...batchedPendingTxns,
+                    ...prev,
+                  ]);
+                }
+                // Single batched removal from transit and queue
+                if (labelsToRemoveFromTransit.length > 0) {
+                  setTransitGoods((prev) =>
+                    prev.filter(
+                      (g) =>
+                        !labelsToRemoveFromTransit.includes(
+                          g.biltyNo?.toLowerCase() ?? "",
+                        ),
+                    ),
+                  );
+                }
+                if (labelsToRemoveFromQueue.length > 0) {
+                  setPendingParcels((prev) =>
+                    prev.filter(
+                      (p) =>
+                        !labelsToRemoveFromQueue.includes(
+                          p.biltyNo?.toLowerCase() ?? "",
+                        ),
+                    ),
+                  );
                 }
                 // Clear all
                 setPerBaleData([]);
@@ -3531,13 +3583,48 @@ function InwardTab({
                 ))}
               </select>
             </div>
-            <ItemNameCombo
-              category={itemForm.category}
-              value={itemForm.itemName}
-              onChange={(val) => setItemForm({ ...itemForm, itemName: val })}
-              inventory={inventory}
-              activeBusinessId={activeBusinessId}
-            />
+            <div>
+              <div className="flex items-center justify-between ml-1 mb-1">
+                <p className="text-[10px] font-black uppercase text-gray-400">
+                  Item Name *
+                </p>
+                <label className="flex items-center gap-1 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isNewItemMode}
+                    onChange={(e) => {
+                      setIsNewItemMode(e.target.checked);
+                      setItemForm({ ...itemForm, itemName: "" });
+                    }}
+                    className="w-3 h-3 accent-blue-600"
+                  />
+                  <span className="text-[10px] font-black uppercase text-blue-600">
+                    ＋ New Item
+                  </span>
+                </label>
+              </div>
+              {isNewItemMode ? (
+                <input
+                  type="text"
+                  value={itemForm.itemName}
+                  onChange={(e) =>
+                    setItemForm({ ...itemForm, itemName: e.target.value })
+                  }
+                  placeholder="Type new item name"
+                  className="w-full border rounded-xl p-3 font-bold bg-yellow-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm border-blue-300"
+                />
+              ) : (
+                <ItemNameCombo
+                  category={itemForm.category}
+                  value={itemForm.itemName}
+                  onChange={(val) =>
+                    setItemForm({ ...itemForm, itemName: val })
+                  }
+                  inventory={inventory}
+                  activeBusinessId={activeBusinessId}
+                />
+              )}
+            </div>
           </div>
           {/* Total Qty in Bale - permanent, always shown */}
           <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
@@ -8455,6 +8542,7 @@ export default function App() {
             existingQueueBiltyNos={pendingParcels
               .filter((p) => !p.businessId || p.businessId === activeBusinessId)
               .map((p) => p.biltyNo)}
+            transactions={transactions}
           />
         )}
         {activeTab === "inward" && currentUser.role !== "supplier" && (
