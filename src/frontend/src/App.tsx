@@ -299,7 +299,7 @@ function DashboardTab({
   inventory,
   minStockThreshold,
   activeBusinessId,
-  transactions: _transactions,
+  transactions,
   onItemClick,
 }: {
   inventory: Record<string, InventoryItem>;
@@ -498,6 +498,47 @@ function DashboardTab({
                                 ),
                               )}
                             </div>
+                            {(() => {
+                              const inwardTx = transactions
+                                .filter(
+                                  (tx) =>
+                                    (!tx.businessId ||
+                                      tx.businessId === activeBusinessId) &&
+                                    tx.type === "INWARD" &&
+                                    (tx.sku === item.sku ||
+                                      (tx.itemName?.toLowerCase() ===
+                                        item.itemName?.toLowerCase() &&
+                                        tx.category === item.category) ||
+                                      tx.baleItemsList?.some(
+                                        (bi: {
+                                          itemName?: string;
+                                          category?: string;
+                                        }) =>
+                                          bi.itemName?.toLowerCase() ===
+                                            item.itemName?.toLowerCase() &&
+                                          bi.category === item.category,
+                                      )),
+                                )
+                                .sort((a, b) =>
+                                  (a.date || "").localeCompare(b.date || ""),
+                                )[0];
+                              if (!inwardTx) return null;
+                              return (
+                                <div className="mt-1.5 space-y-0.5">
+                                  {inwardTx.biltyNo && (
+                                    <span className="inline-flex items-center gap-1 text-[9px] font-bold bg-green-50 text-green-700 px-1.5 py-0.5 rounded border border-green-100">
+                                      📦 {inwardTx.biltyNo}
+                                    </span>
+                                  )}
+                                  <p className="text-[9px] text-gray-400 font-bold">
+                                    Added{" "}
+                                    {inwardTx.date?.split("T")[0] ||
+                                      inwardTx.date}{" "}
+                                    · {inwardTx.user || "?"}
+                                  </p>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="px-6 py-4 text-center font-black text-green-700 text-lg">
                             {Number(item.shop || 0)}
@@ -1132,7 +1173,14 @@ function WarehouseTab({
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally only runs on moveToQueueData
   useEffect(() => {
     if (!moveToQueueData) return;
-    const biltyStr = moveToQueueData.biltyNo || "";
+    const biltyStr = (moveToQueueData.biltyNo || "").replace(
+      /X\d+\(\d+\)$/i,
+      "",
+    );
+    const pkgFromPostfix = (() => {
+      const m = (moveToQueueData.biltyNo || "").match(/X(\d+)\(\d+\)$/i);
+      return m ? m[1] : null;
+    })();
     const dashIdx = biltyStr.lastIndexOf("-");
     if (dashIdx > 0) {
       const prefix = biltyStr.slice(0, dashIdx);
@@ -1157,6 +1205,7 @@ function WarehouseTab({
         moveToQueueData.category ||
         prev.itemCategory,
       itemName: moveToQueueData.itemName || prev.itemName,
+      packages: moveToQueueData.packages || pkgFromPostfix || prev.packages,
     }));
     clearMoveToQueueData?.();
   }, [moveToQueueData]);
@@ -1182,6 +1231,7 @@ function WarehouseTab({
           transitMatch.category ||
           prev.itemCategory,
         itemName: transitMatch.itemName || prev.itemName,
+        packages: transitMatch.packages || prev.packages,
       }));
       showNotification("Auto-filled from Transit entry.", "success");
     }
@@ -1233,10 +1283,19 @@ function WarehouseTab({
           ...prev,
         ]);
       }
-      // Remove original bilty from transit
+      // Remove original bilty from transit (both exact and postfixed variants)
       if (setTransitGoods) {
         setTransitGoods((prev) =>
-          prev.filter((g) => g.biltyNo?.toLowerCase() !== bNo.toLowerCase()),
+          prev.filter((g) => {
+            const gBase = (g.biltyNo || "")
+              .replace(/X\d+\(\d+\)$/i, "")
+              .toLowerCase()
+              .trim();
+            return (
+              gBase !== bNo.toLowerCase() &&
+              g.biltyNo?.toLowerCase() !== bNo.toLowerCase()
+            );
+          }),
         );
       }
       setBaleRows([]);
@@ -1270,10 +1329,19 @@ function WarehouseTab({
       },
       ...prev,
     ]);
-    // Remove matching bilty from transit
+    // Remove matching bilty from transit (both exact and postfixed variants)
     if (setTransitGoods) {
       setTransitGoods((prev) =>
-        prev.filter((g) => g.biltyNo?.toLowerCase() !== bNo.toLowerCase()),
+        prev.filter((g) => {
+          const gBase = (g.biltyNo || "")
+            .replace(/X\d+\(\d+\)$/i, "")
+            .toLowerCase()
+            .trim();
+          return (
+            gBase !== bNo.toLowerCase() &&
+            g.biltyNo?.toLowerCase() !== bNo.toLowerCase()
+          );
+        }),
       );
     }
     setBiltyNumber("");
@@ -1852,23 +1920,73 @@ function InwardTab({
       totalQty: string;
       received: boolean;
       notReceivedTarget: "transit" | "queue";
+      locked?: boolean;
+      lockedBy?: string;
+      lockedDate?: string;
     }[]
   >([]);
   const [activeBaleIdx, setActiveBaleIdx] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - only re-run on bilty/package change
   useEffect(() => {
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
     const pkgCount = Number(inwardPackages) || 1;
     if (biltyNumber && pkgCount > 1) {
       setPerBaleData(
-        Array.from({ length: pkgCount }, (_, i) => ({
-          label: `${bNo}X${pkgCount}(${i + 1})`,
-          items: [] as BaleItem[],
-          totalQty: "",
-          received: true,
-          notReceivedTarget: "transit" as const,
-        })),
+        Array.from({ length: pkgCount }, (_, i) => {
+          const label = `${bNo}X${pkgCount}(${i + 1})`;
+          const existingTx = transactions.find(
+            (tx) =>
+              tx.type === "INWARD" &&
+              (!tx.businessId || tx.businessId === activeBusinessId) &&
+              tx.biltyNo?.toLowerCase() === label.toLowerCase(),
+          );
+          const alreadyOpened = !!existingTx;
+          return {
+            label,
+            items:
+              existingTx?.baleItemsList?.map(
+                (
+                  bi: {
+                    category?: string;
+                    itemName?: string;
+                    attributes?: Record<string, string>;
+                    shopQty?: number;
+                    godownQuants?: Record<string, number>;
+                    saleRate?: number;
+                    purchaseRate?: number;
+                  },
+                  idx: number,
+                ) => ({
+                  id: idx,
+                  sku: "",
+                  category: bi.category || "",
+                  itemName: bi.itemName || "",
+                  attributes: bi.attributes || {},
+                  shopQty: String(bi.shopQty || 0),
+                  godownQuants: Object.fromEntries(
+                    Object.entries(bi.godownQuants || {}).map(([g, v]) => [
+                      g,
+                      String(v),
+                    ]),
+                  ),
+                  saleRate: String(bi.saleRate || 0),
+                  purchaseRate: String(bi.purchaseRate || 0),
+                  customData: {},
+                }),
+              ) || ([] as BaleItem[]),
+            totalQty: existingTx
+              ? String(existingTx.totalQtyInBale || existingTx.itemsCount || "")
+              : "",
+            received: true,
+            notReceivedTarget: "transit" as const,
+            locked: alreadyOpened,
+            lockedBy: existingTx?.user || "",
+            lockedDate:
+              existingTx?.date?.split("T")[0] || existingTx?.date || "",
+          };
+        }),
       );
       setActiveBaleIdx(0);
     } else {
@@ -1893,6 +2011,9 @@ function InwardTab({
         itemName: (match as TransitRecord).itemName || prev.itemName,
         category: (match as TransitRecord).category || prev.category || "",
       }));
+      const pkgs =
+        (match as PendingParcel).packages || (match as TransitRecord).packages;
+      if (pkgs && Number(pkgs) > 1) setInwardPackages(pkgs);
       showNotification("Found Bilty! Data auto-filled.", "success");
     } else {
       setMatchedDetails(null);
@@ -1929,6 +2050,8 @@ function InwardTab({
         prev.category,
     }));
     setQueueBiltySearch(biltyStr);
+    const pkgs = (openingParcel as PendingParcel).packages;
+    if (pkgs && Number(pkgs) > 1) setInwardPackages(pkgs);
   }, [openingParcel]);
 
   useEffect(() => {
@@ -2234,6 +2357,8 @@ function InwardTab({
                             p.itemCategory || p.category || prev.category || "",
                           itemName: p.itemName || prev.itemName || "",
                         }));
+                        if (p.packages && Number(p.packages) > 1)
+                          setInwardPackages(p.packages);
                         showNotification(
                           "Queue entry selected! Fields auto-filled.",
                           "success",
@@ -2303,6 +2428,8 @@ function InwardTab({
                             g.itemCategory || g.category || prev.category || "",
                           itemName: g.itemName || prev.itemName || "",
                         }));
+                        if (g.packages && Number(g.packages) > 1)
+                          setInwardPackages(g.packages);
                         showNotification(
                           "Transit entry selected! Fields auto-filled.",
                           "success",
@@ -2464,12 +2591,17 @@ function InwardTab({
                 }}
                 className={`px-4 py-3 text-[10px] font-black uppercase shrink-0 transition-colors border-r last:border-r-0 ${
                   activeBaleIdx === idx
-                    ? "bg-blue-600 text-white"
-                    : bale.received
-                      ? "bg-white text-gray-600 hover:bg-blue-50"
-                      : "bg-orange-50 text-orange-600 hover:bg-orange-100"
+                    ? bale.locked
+                      ? "bg-gray-500 text-white"
+                      : "bg-blue-600 text-white"
+                    : bale.locked
+                      ? "bg-gray-100 text-gray-400"
+                      : bale.received
+                        ? "bg-white text-gray-600 hover:bg-blue-50"
+                        : "bg-orange-50 text-orange-600 hover:bg-orange-100"
                 }`}
               >
+                {bale.locked ? "🔒 " : ""}
                 {bale.label.split("(").pop()?.replace(")", "") || idx + 1}
                 {bale.items.length > 0 && (
                   <span className="ml-1 bg-white/30 px-1 rounded-full">
@@ -2483,6 +2615,45 @@ function InwardTab({
           {(() => {
             const bale = perBaleData[activeBaleIdx];
             if (!bale) return null;
+            if (bale.locked) {
+              return (
+                <div className="p-6">
+                  <div className="bg-gray-100 border-2 border-gray-300 rounded-2xl p-6 text-center">
+                    <div className="text-4xl mb-2">🔒</div>
+                    <h4 className="font-black text-lg text-gray-700">
+                      {bale.label}
+                    </h4>
+                    <p className="text-sm font-bold text-gray-500 mt-1">
+                      Already opened on{" "}
+                      <span className="text-gray-700">{bale.lockedDate}</span>{" "}
+                      by{" "}
+                      <span className="text-gray-700">
+                        {bale.lockedBy || "unknown"}
+                      </span>
+                    </p>
+                    <p className="text-[10px] text-gray-400 font-bold mt-2 uppercase tracking-wider">
+                      This bale is already in inventory. Select another bale tab
+                      to continue.
+                    </p>
+                    {bale.items.length > 0 && (
+                      <div className="mt-4 text-left space-y-1">
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-2">
+                          Items in this bale:
+                        </p>
+                        {bale.items.map((it, i) => (
+                          <div
+                            key={`${it.itemName}-${i}`}
+                            className="text-xs text-gray-600 bg-white rounded-xl px-3 py-2 border"
+                          >
+                            {it.category} · {it.itemName}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            }
             return (
               <div className="p-6 space-y-4">
                 <div className="flex items-center justify-between">
@@ -2696,8 +2867,9 @@ function InwardTab({
             <button
               type="button"
               onClick={() => {
-                // Validate all received bales
+                // Validate all received bales (skip locked ones - already processed)
                 for (const bale of perBaleData) {
+                  if (bale.locked) continue;
                   if (!bale.received) continue;
                   if (bale.items.length === 0) {
                     showNotification(
@@ -2726,8 +2898,9 @@ function InwardTab({
                     }
                   }
                 }
-                // Check for duplicate bilties
+                // Check for duplicate bilties (skip locked ones)
                 for (const bale of perBaleData) {
+                  if (bale.locked) continue;
                   if (!bale.received) continue;
                   const existing = transactions.find(
                     (t) =>
@@ -2742,8 +2915,9 @@ function InwardTab({
                     return;
                   }
                 }
-                // Process each bale
+                // Process each bale (skip locked ones - already in inventory)
                 for (const bale of perBaleData) {
+                  if (bale.locked) continue;
                   if (bale.received) {
                     // Auto-create inventory items
                     for (const itm of bale.items) {
