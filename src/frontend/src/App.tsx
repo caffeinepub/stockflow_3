@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Download,
   Edit,
+  Edit2,
   History,
   LayoutDashboard,
   LogOut,
@@ -148,6 +149,28 @@ interface BaleItem {
   saleRate: string;
   purchaseRate: string;
   customData: Record<string, string>;
+}
+
+interface InwardSavedEntry {
+  id: number;
+  biltyNumber: string;
+  baseNumber: string;
+  packages: string;
+  items: {
+    category: string;
+    itemName: string;
+    qty: number;
+    godownQty: number;
+    shopQty: number;
+    saleRate: number;
+    purchaseRate: number;
+    attributes: Record<string, string>;
+  }[];
+  savedBy: string;
+  savedAt: string;
+  transporter: string;
+  supplier: string;
+  businessId: string;
 }
 
 /* ================= CONSTANTS ================= */
@@ -611,6 +634,8 @@ function TransitTab({
   transportTracking,
   setMoveToQueueData,
   setActiveTabFromTransit,
+  pendingParcels,
+  transactions,
 }: {
   transitGoods: TransitRecord[];
   setTransitGoods: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
@@ -627,6 +652,8 @@ function TransitTab({
   transportTracking?: Record<string, string>;
   setMoveToQueueData?: (d: TransitRecord | null) => void;
   setActiveTabFromTransit?: (t: string) => void;
+  pendingParcels?: PendingParcel[];
+  transactions?: Transaction[];
 }) {
   const [showForm, setShowForm] = useState(false);
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
@@ -713,6 +740,30 @@ function TransitTab({
         `Bilty ${bNo} already exists in Transit!`,
         "error",
       );
+    // Check if bilty exists in Queue
+    const isDupeQueue = (pendingParcels || []).some(
+      (p) =>
+        (!p.businessId || p.businessId === activeBusinessId) &&
+        (p.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+          (p.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            bNo.toLowerCase()),
+    );
+    if (isDupeQueue)
+      return showNotification(`Bilty ${bNo} already exists in Queue!`, "error");
+    // Check if bilty exists in Inward history
+    const isDupeInward = (transactions || []).some(
+      (t) =>
+        t.type === "INWARD" &&
+        (!t.businessId || t.businessId === activeBusinessId) &&
+        (t.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+          (t.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            bNo.toLowerCase()),
+    );
+    if (isDupeInward)
+      return showNotification(
+        `Bilty ${bNo} has already been processed in Inward!`,
+        "error",
+      );
     if (pkgCount > 1) {
       const newEntries: TransitRecord[] = [];
       for (let i = 1; i <= pkgCount; i++) {
@@ -722,7 +773,18 @@ function TransitTab({
             (!g.businessId || g.businessId === activeBusinessId) &&
             g.biltyNo?.toLowerCase() === label.toLowerCase(),
         );
-        if (!alreadyExists) {
+        const alreadyInQueue = (pendingParcels || []).some(
+          (p) =>
+            (!p.businessId || p.businessId === activeBusinessId) &&
+            p.biltyNo?.toLowerCase() === label.toLowerCase(),
+        );
+        const alreadyInInward = (transactions || []).some(
+          (t) =>
+            t.type === "INWARD" &&
+            (!t.businessId || t.businessId === activeBusinessId) &&
+            t.biltyNo?.toLowerCase() === label.toLowerCase(),
+        );
+        if (!alreadyExists && !alreadyInQueue && !alreadyInInward) {
           newEntries.push({
             id: Date.now() + i,
             biltyNo: label,
@@ -1297,10 +1359,20 @@ function WarehouseTab({
       // Save received bales to Queue, pending bales to Transit
       const receivedBales = baleRows.filter((r) => r.status === "received");
       const pendingBales = baleRows.filter((r) => r.status === "pending");
-      // Fix 3: Check for duplicates in Queue and inwardHistory per bale
-      const inwardBiltySet = new Set(
-        (existingQueueBiltyNos ?? []).map((b) => b.toLowerCase()),
+      // Check for duplicates in Queue, inwardHistory, and INWARD transactions
+      const inwardTxBiltySet = new Set(
+        (transactions || [])
+          .filter(
+            (t) =>
+              t.type === "INWARD" &&
+              (!t.businessId || t.businessId === activeBusinessId),
+          )
+          .map((t) => (t.biltyNo || "").toLowerCase()),
       );
+      const inwardBiltySet = new Set([
+        ...(existingQueueBiltyNos ?? []).map((b) => b.toLowerCase()),
+        ...inwardTxBiltySet,
+      ]);
       const dupLabels = receivedBales
         .filter((r) => inwardBiltySet.has(r.biltyLabel.toLowerCase()))
         .map((r) => r.biltyLabel);
@@ -1329,9 +1401,22 @@ function WarehouseTab({
         })),
         ...prev,
       ]);
-      if (setTransitGoods && pendingBales.length > 0) {
-        setTransitGoods((prev) => [
-          ...pendingBales.map((r, i) => ({
+      if (setTransitGoods) {
+        const allBaleLabels = new Set(
+          baleRows.map((r) => r.biltyLabel.toLowerCase()),
+        );
+        setTransitGoods((prev) => {
+          // Remove ALL transit entries that match the base bilty OR any postfix variant
+          const cleaned = prev.filter((g) => {
+            const gLower = (g.biltyNo || "").toLowerCase();
+            const gBase = gLower.replace(/x\d+\(\d+\)$/i, "");
+            if (gLower === bNo.toLowerCase()) return false;
+            if (gBase === bNo.toLowerCase()) return false;
+            if (allBaleLabels.has(gLower)) return false;
+            return true;
+          });
+          // Add back only the pending bales (not yet received)
+          const newPendingEntries = pendingBales.map((r, i) => ({
             id: Date.now() + 1000 + i,
             biltyNo: r.biltyLabel,
             businessId: activeBusinessId,
@@ -1343,29 +1428,9 @@ function WarehouseTab({
             date: form.arrivalDate,
             addedBy: "Queue",
             customData: form.customData,
-          })),
-          ...prev,
-        ]);
-      }
-      // Remove from Transit ONLY the bales that were actually received
-      if (setTransitGoods && receivedBales.length > 0) {
-        const receivedLabels = new Set(
-          receivedBales.map((r) => r.biltyLabel.toLowerCase()),
-        );
-        setTransitGoods((prev) =>
-          prev.filter((g) => {
-            // Remove exact postfix match for received bales
-            if (receivedLabels.has(g.biltyNo?.toLowerCase() || ""))
-              return false;
-            // Also remove the base (non-postfixed) bilty entry if all bales are received
-            if (
-              pendingBales.length === 0 &&
-              g.biltyNo?.toLowerCase() === bNo.toLowerCase()
-            )
-              return false;
-            return true;
-          }),
-        );
+          }));
+          return [...newPendingEntries, ...cleaned];
+        });
       }
       setBaleRows([]);
       setBiltyNumber("");
@@ -1919,6 +1984,7 @@ function InwardTab({
   transactions,
   setInventory,
   setConfirmDialog,
+  setInwardSaved,
 }: {
   inventory: Record<string, InventoryItem>;
   categories: Category[];
@@ -1956,6 +2022,7 @@ function InwardTab({
   setConfirmDialog: (
     d: { message: string; onConfirm: () => void } | null,
   ) => void;
+  setInwardSaved?: React.Dispatch<React.SetStateAction<InwardSavedEntry[]>>;
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1997,9 +2064,52 @@ function InwardTab({
       locked?: boolean;
       lockedBy?: string;
       lockedDate?: string;
+      pendingSaved?: boolean;
+      pendingSavedTarget?: string;
     }[]
   >([]);
   const [activeBaleIdx, setActiveBaleIdx] = useState(0);
+  const [perBaleFormData, setPerBaleFormData] = useState<
+    Record<
+      number,
+      {
+        category: string;
+        itemName: string;
+        isNewItem: boolean;
+        newItemName: string;
+        totalQty: string;
+        shopQty: string;
+        godownQuants: Record<string, string>;
+        saleRate: string;
+        purchaseRate: string;
+        attributes: Record<string, string>;
+      }
+    >
+  >({});
+
+  const getPerBaleForm = (idx: number) =>
+    perBaleFormData[idx] || {
+      category: "",
+      itemName: "",
+      isNewItem: false,
+      newItemName: "",
+      totalQty: "",
+      shopQty: "",
+      godownQuants: {},
+      saleRate: "",
+      purchaseRate: "",
+      attributes: {},
+    };
+
+  const setPerBaleForm = (
+    idx: number,
+    patch: Partial<ReturnType<typeof getPerBaleForm>>,
+  ) => {
+    setPerBaleFormData((prev) => ({
+      ...prev,
+      [idx]: { ...getPerBaleForm(idx), ...patch },
+    }));
+  };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - only re-run on bilty/package change
   useEffect(() => {
@@ -2724,7 +2834,9 @@ function InwardTab({
                       {bale.label}
                     </h4>
                     <p className="text-sm font-bold text-gray-500 mt-1">
-                      Already opened on{" "}
+                      {bale.pendingSaved
+                        ? "Saved as Not Received on"
+                        : "Already opened on"}{" "}
                       <span className="text-gray-700">{bale.lockedDate}</span>{" "}
                       by{" "}
                       <span className="text-gray-700">
@@ -2732,22 +2844,56 @@ function InwardTab({
                       </span>
                     </p>
                     <p className="text-[10px] text-gray-400 font-bold mt-2 uppercase tracking-wider">
-                      This bale is already in inventory. Select another bale tab
-                      to continue.
+                      {bale.pendingSaved
+                        ? `Bale transferred to ${bale.pendingSavedTarget || "transit/queue"} as Not Received. Select another bale tab.`
+                        : "This bale is already in inventory. Select another bale tab to continue."}
                     </p>
                     {bale.items.length > 0 && (
                       <div className="mt-4 text-left space-y-1">
                         <p className="text-[10px] font-black uppercase text-gray-400 mb-2">
                           Items in this bale:
                         </p>
-                        {bale.items.map((it, i) => (
-                          <div
-                            key={`${it.itemName}-${i}`}
-                            className="text-xs text-gray-600 bg-white rounded-xl px-3 py-2 border"
-                          >
-                            {it.category} · {it.itemName}
+                        {bale.totalQty && (
+                          <div className="text-xs font-bold text-blue-700 bg-blue-50 rounded-xl px-3 py-2 border border-blue-200 mb-2">
+                            Total Bale Qty: {bale.totalQty}
                           </div>
-                        ))}
+                        )}
+                        {bale.items.map((it, i) => {
+                          const itemQty =
+                            (Number(it.shopQty) || 0) +
+                            Object.values(it.godownQuants || {}).reduce(
+                              (a, b) => a + Number(b || 0),
+                              0,
+                            );
+                          return (
+                            <div
+                              key={`${it.itemName}-${i}`}
+                              className="text-xs text-gray-600 bg-white rounded-xl px-3 py-2 border"
+                            >
+                              <span className="font-bold">
+                                {it.category} · {it.itemName}
+                              </span>
+                              {itemQty > 0 && (
+                                <span className="ml-2 text-green-700 font-black">
+                                  Qty: {itemQty}
+                                </span>
+                              )}
+                              {Number(it.shopQty) > 0 && (
+                                <span className="ml-1 text-indigo-600">
+                                  (Shop: {it.shopQty}
+                                </span>
+                              )}
+                              {Object.entries(it.godownQuants || {})
+                                .filter(([, q]) => Number(q) > 0)
+                                .map(([g, q]) => (
+                                  <span key={g} className="ml-1 text-gray-500">
+                                    {g}: {q}
+                                  </span>
+                                ))}
+                              {Number(it.shopQty) > 0 && <span>)</span>}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -2914,49 +3060,302 @@ function InwardTab({
                         </table>
                       </div>
                     )}
-                    {/* Add item form for this bale (reuse itemForm state) */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Add current itemForm to this bale
-                        if (!itemForm.itemName || !itemForm.category) {
-                          showNotification(
-                            "Fill category and item name first",
-                            "error",
-                          );
-                          return;
-                        }
-                        const sku = generateSku(
-                          itemForm.category,
-                          itemForm.itemName,
-                          itemForm.attributes,
-                          itemForm.saleRate,
-                          activeBusinessId,
-                        );
-                        const newItem: BaleItem = {
-                          ...itemForm,
-                          sku,
-                          id: Date.now(),
-                        };
-                        const updated = [...perBaleData];
-                        updated[activeBaleIdx] = {
-                          ...updated[activeBaleIdx],
-                          items: [...updated[activeBaleIdx].items, newItem],
-                        };
-                        setPerBaleData(updated);
-                        setItemForm({
-                          ...itemForm,
-                          itemName: "",
-                          shopQty: "",
-                          godownQuants: {},
-                          customData: {},
-                        });
-                        showNotification("Item added to bale", "success");
-                      }}
-                      className="w-full border-2 border-dashed border-blue-300 text-blue-600 font-black text-[10px] uppercase py-3 rounded-2xl hover:bg-blue-50"
-                    >
-                      + Add Current Form Item to Bale {activeBaleIdx + 1}
-                    </button>
+                    {/* Inline per-bale item form */}
+                    {(() => {
+                      const bf = getPerBaleForm(activeBaleIdx);
+                      const bfCat = categories.find(
+                        (c) => c.name === bf.category,
+                      );
+                      const _effectiveItemName = bf.isNewItem
+                        ? bf.newItemName
+                        : bf.itemName;
+                      return (
+                        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+                          <p className="text-[10px] font-black uppercase text-blue-800 tracking-widest">
+                            Add Item to This Bale
+                          </p>
+                          <div className="grid grid-cols-1 gap-3">
+                            <div>
+                              <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                                Category *
+                              </p>
+                              <select
+                                value={bf.category}
+                                onChange={(e) =>
+                                  setPerBaleForm(activeBaleIdx, {
+                                    category: e.target.value,
+                                    itemName: "",
+                                    newItemName: "",
+                                    attributes: {},
+                                  })
+                                }
+                                className="w-full border rounded-xl p-2.5 font-bold bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                              >
+                                <option value="">Select Category</option>
+                                {categories.map((c) => (
+                                  <option key={c.name} value={c.name}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <p className="text-[10px] font-black uppercase text-gray-500">
+                                  Item Name *
+                                </p>
+                                <label className="flex items-center gap-1 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={bf.isNewItem}
+                                    onChange={(e) =>
+                                      setPerBaleForm(activeBaleIdx, {
+                                        isNewItem: e.target.checked,
+                                        itemName: "",
+                                        newItemName: "",
+                                      })
+                                    }
+                                    className="w-3 h-3 accent-blue-600"
+                                  />
+                                  <span className="text-[10px] font-black uppercase text-blue-600">
+                                    ＋ New Item
+                                  </span>
+                                </label>
+                              </div>
+                              {bf.isNewItem ? (
+                                <input
+                                  type="text"
+                                  value={bf.newItemName}
+                                  onChange={(e) =>
+                                    setPerBaleForm(activeBaleIdx, {
+                                      newItemName: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Type new item name"
+                                  className="w-full border border-blue-300 rounded-xl p-2.5 font-bold bg-yellow-50 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                                />
+                              ) : (
+                                <ItemNameCombo
+                                  category={bf.category}
+                                  value={bf.itemName}
+                                  onChange={(val) =>
+                                    setPerBaleForm(activeBaleIdx, {
+                                      itemName: val,
+                                    })
+                                  }
+                                  inventory={inventory}
+                                  activeBusinessId={activeBusinessId}
+                                />
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                                Total Qty in this item *
+                              </p>
+                              <input
+                                type="number"
+                                value={bf.totalQty}
+                                onChange={(e) =>
+                                  setPerBaleForm(activeBaleIdx, {
+                                    totalQty: e.target.value,
+                                  })
+                                }
+                                placeholder="Qty for this item"
+                                className="w-full border rounded-xl p-2.5 font-bold bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                              />
+                            </div>
+                            {bfCat && bfCat.fields.length > 0 && (
+                              <div className="grid grid-cols-2 gap-2">
+                                {bfCat.fields.map((f) => (
+                                  <div key={f.name}>
+                                    <p className="text-[10px] font-black uppercase text-blue-800 mb-1">
+                                      {f.name}
+                                    </p>
+                                    {f.type === "select" ? (
+                                      <select
+                                        value={bf.attributes[f.name] || ""}
+                                        onChange={(e) =>
+                                          setPerBaleForm(activeBaleIdx, {
+                                            attributes: {
+                                              ...bf.attributes,
+                                              [f.name]: e.target.value,
+                                            },
+                                          })
+                                        }
+                                        className="w-full border rounded-xl p-2 font-bold text-sm bg-white"
+                                      >
+                                        <option value="">-</option>
+                                        {(f.options || []).map((o) => (
+                                          <option key={o} value={o}>
+                                            {o}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={bf.attributes[f.name] || ""}
+                                        onChange={(e) =>
+                                          setPerBaleForm(activeBaleIdx, {
+                                            attributes: {
+                                              ...bf.attributes,
+                                              [f.name]: e.target.value,
+                                            },
+                                          })
+                                        }
+                                        className="w-full border rounded-xl p-2 font-bold text-sm bg-white"
+                                      />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <p className="text-[10px] font-black uppercase text-green-700 mb-1">
+                                  Shop Qty
+                                </p>
+                                <input
+                                  type="number"
+                                  value={bf.shopQty}
+                                  onChange={(e) =>
+                                    setPerBaleForm(activeBaleIdx, {
+                                      shopQty: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Shop"
+                                  className="w-full border-2 border-green-200 rounded-xl p-2.5 font-black text-green-700 outline-none"
+                                />
+                              </div>
+                              {godowns.map((g) => (
+                                <div key={g}>
+                                  <p className="text-[10px] font-black uppercase text-amber-700 mb-1 truncate">
+                                    {g}
+                                  </p>
+                                  <input
+                                    type="number"
+                                    value={bf.godownQuants[g] || ""}
+                                    onChange={(e) =>
+                                      setPerBaleForm(activeBaleIdx, {
+                                        godownQuants: {
+                                          ...bf.godownQuants,
+                                          [g]: e.target.value,
+                                        },
+                                      })
+                                    }
+                                    placeholder={g}
+                                    className="w-full border-2 border-amber-200 rounded-xl p-2.5 font-black text-amber-700 outline-none"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <p className="text-[10px] font-black uppercase text-blue-600 mb-1">
+                                  Sale Rate (₹)
+                                </p>
+                                <input
+                                  type="number"
+                                  value={bf.saleRate}
+                                  onChange={(e) =>
+                                    setPerBaleForm(activeBaleIdx, {
+                                      saleRate: e.target.value,
+                                    })
+                                  }
+                                  className="w-full border-2 border-blue-200 rounded-xl p-2.5 font-black text-blue-700 outline-none"
+                                />
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                                  Pur. Rate (₹)
+                                </p>
+                                <input
+                                  type="number"
+                                  value={bf.purchaseRate}
+                                  onChange={(e) =>
+                                    setPerBaleForm(activeBaleIdx, {
+                                      purchaseRate: e.target.value,
+                                    })
+                                  }
+                                  className="w-full border rounded-xl p-2.5 font-black text-gray-600 outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const bfNow = getPerBaleForm(activeBaleIdx);
+                              const finalItemName = bfNow.isNewItem
+                                ? bfNow.newItemName
+                                : bfNow.itemName;
+                              if (!finalItemName || !bfNow.category) {
+                                showNotification(
+                                  "Fill category and item name first",
+                                  "error",
+                                );
+                                return;
+                              }
+                              const dist =
+                                (Number(bfNow.shopQty) || 0) +
+                                Object.values(bfNow.godownQuants).reduce(
+                                  (a, b) => a + Number(b || 0),
+                                  0,
+                                );
+                              const qty = Number(bfNow.totalQty) || 0;
+                              if (qty > 0 && dist !== qty) {
+                                showNotification(
+                                  `Distribution (${dist}) must equal Total Qty (${qty})`,
+                                  "error",
+                                );
+                                return;
+                              }
+                              const sku = generateSku(
+                                bfNow.category,
+                                finalItemName,
+                                bfNow.attributes,
+                                bfNow.saleRate,
+                                activeBusinessId,
+                              );
+                              const newItem: BaleItem = {
+                                id: Date.now(),
+                                sku,
+                                category: bfNow.category,
+                                itemName: finalItemName,
+                                attributes: bfNow.attributes,
+                                shopQty: bfNow.shopQty,
+                                godownQuants: bfNow.godownQuants,
+                                saleRate: bfNow.saleRate,
+                                purchaseRate: bfNow.purchaseRate,
+                                customData: {},
+                              };
+                              const updated = [...perBaleData];
+                              updated[activeBaleIdx] = {
+                                ...updated[activeBaleIdx],
+                                items: [
+                                  ...updated[activeBaleIdx].items,
+                                  newItem,
+                                ],
+                              };
+                              setPerBaleData(updated);
+                              setPerBaleForm(activeBaleIdx, {
+                                itemName: "",
+                                newItemName: "",
+                                isNewItem: false,
+                                shopQty: "",
+                                godownQuants: {},
+                                totalQty: "",
+                                attributes: {},
+                              });
+                              showNotification("Item added to bale", "success");
+                            }}
+                            className="w-full bg-blue-600 text-white font-black py-2.5 rounded-xl uppercase tracking-widest text-[10px] hover:bg-blue-700"
+                          >
+                            ＋ Add Item to Bale {activeBaleIdx + 1}
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -3154,6 +3553,46 @@ function InwardTab({
                             bale.label.toLowerCase(),
                         ),
                       );
+                      // Add to inwardSaved
+                      if (setInwardSaved) {
+                        setInwardSaved((prev) => [
+                          {
+                            id: Date.now(),
+                            biltyNumber: bale.label,
+                            baseNumber: bale.label.replace(/X\d+\(\d+\)$/i, ""),
+                            packages: inwardPackages,
+                            items: bale.items.map((i) => ({
+                              category: i.category,
+                              itemName: i.itemName,
+                              qty:
+                                (Number(i.shopQty) || 0) +
+                                Object.values(i.godownQuants).reduce(
+                                  (a, b) => a + Number(b || 0),
+                                  0,
+                                ),
+                              shopQty: Number(i.shopQty) || 0,
+                              godownQty: Object.values(i.godownQuants).reduce(
+                                (a, b) => a + Number(b || 0),
+                                0,
+                              ),
+                              saleRate: Number(i.saleRate) || 0,
+                              purchaseRate: Number(i.purchaseRate) || 0,
+                              attributes: i.attributes || {},
+                            })),
+                            savedBy: currentUser.username,
+                            savedAt: new Date().toISOString(),
+                            transporter:
+                              (matchedDetails as TransitRecord)
+                                ?.transportName || "",
+                            supplier:
+                              (matchedDetails as TransitRecord)?.supplierName ||
+                              (matchedDetails as PendingParcel)?.supplier ||
+                              "",
+                            businessId: activeBusinessId,
+                          },
+                          ...prev,
+                        ]);
+                      }
                       // Mark bale as locked
                       const updated = [...perBaleData];
                       updated[activeBaleIdx] = {
@@ -3248,18 +3687,25 @@ function InwardTab({
                       locked: true,
                       lockedBy: currentUser.username,
                       lockedDate: new Date().toISOString().split("T")[0],
+                      pendingSaved: true,
+                      pendingSavedTarget: bale.notReceivedTarget,
                     };
                     setPerBaleData(updated);
                     showNotification(
-                      `Bale ${bale.label} marked pending and saved to ${bale.notReceivedTarget}`,
+                      `Bale ${bale.label} transferred to ${bale.notReceivedTarget} as Not Received`,
                       "success",
                     );
                   }
                 }}
-                className="w-full bg-green-600 text-white font-black py-3 rounded-2xl uppercase tracking-widest text-xs shadow hover:bg-green-700 transition-colors"
+                disabled={
+                  !perBaleData[activeBaleIdx]?.received &&
+                  !perBaleData[activeBaleIdx]?.notReceivedTarget
+                }
+                className="w-full bg-green-600 text-white font-black py-3 rounded-2xl uppercase tracking-widest text-xs shadow hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                💾 Save Bale {activeBaleIdx + 1} —{" "}
-                {perBaleData[activeBaleIdx]?.label}
+                {perBaleData[activeBaleIdx]?.received
+                  ? `💾 Save Bale ${activeBaleIdx + 1} — ${perBaleData[activeBaleIdx]?.label}`
+                  : `📦 Store as Not Received — ${perBaleData[activeBaleIdx]?.label}`}
               </button>
             </div>
           )}
@@ -3538,6 +3984,45 @@ function InwardTab({
                     ),
                   );
                 }
+                // Add received bales to inwardSaved
+                if (setInwardSaved && batchedInwardTxns.length > 0) {
+                  const newSavedEntries: InwardSavedEntry[] = perBaleData
+                    .filter((b) => !b.locked && b.received)
+                    .map((bale) => ({
+                      id: Date.now() + Math.random(),
+                      biltyNumber: bale.label,
+                      baseNumber: bale.label.replace(/X\d+\(\d+\)$/i, ""),
+                      packages: inwardPackages,
+                      items: bale.items.map((i) => ({
+                        category: i.category,
+                        itemName: i.itemName,
+                        qty:
+                          (Number(i.shopQty) || 0) +
+                          Object.values(i.godownQuants).reduce(
+                            (a, b) => a + Number(b || 0),
+                            0,
+                          ),
+                        shopQty: Number(i.shopQty) || 0,
+                        godownQty: Object.values(i.godownQuants).reduce(
+                          (a, b) => a + Number(b || 0),
+                          0,
+                        ),
+                        saleRate: Number(i.saleRate) || 0,
+                        purchaseRate: Number(i.purchaseRate) || 0,
+                        attributes: i.attributes || {},
+                      })),
+                      savedBy: currentUser.username,
+                      savedAt: new Date().toISOString(),
+                      transporter:
+                        (matchedDetails as TransitRecord)?.transportName || "",
+                      supplier:
+                        (matchedDetails as TransitRecord)?.supplierName ||
+                        (matchedDetails as PendingParcel)?.supplier ||
+                        "",
+                      businessId: activeBusinessId,
+                    }));
+                  setInwardSaved((prev) => [...newSavedEntries, ...prev]);
+                }
                 // Clear all
                 setPerBaleData([]);
                 setInwardPackages("1");
@@ -3557,7 +4042,7 @@ function InwardTab({
         </div>
       )}
 
-      {showItemForm && (
+      {showItemForm && Number(inwardPackages) <= 1 && (
         <form
           onSubmit={addItemToBale}
           className="bg-white p-6 sm:p-8 rounded-[2.5rem] border shadow-xl space-y-6 animate-fade-in-down"
@@ -7996,6 +8481,362 @@ function ItemHistoryPanel({
 }
 
 /* ================= SIDEBAR / NAV ================= */
+/* ================= INWARD SAVED TAB ================= */
+function InwardSavedTab({
+  inwardSaved,
+  setInwardSaved,
+  currentUser,
+  transactions,
+  activeBusinessId,
+  showNotification,
+}: {
+  inwardSaved: InwardSavedEntry[];
+  setInwardSaved: React.Dispatch<React.SetStateAction<InwardSavedEntry[]>>;
+  currentUser: AppUser;
+  transactions: Transaction[];
+  activeBusinessId: string;
+  showNotification: (m: string, t?: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedBilty, setSelectedBilty] = useState<string | null>(null);
+  const [editingEntry, setEditingEntry] = useState<InwardSavedEntry | null>(
+    null,
+  );
+
+  const filtered = inwardSaved.filter(
+    (e) =>
+      (!e.businessId || e.businessId === activeBusinessId) &&
+      (!search ||
+        e.biltyNumber.toLowerCase().includes(search.toLowerCase()) ||
+        e.savedBy.toLowerCase().includes(search.toLowerCase()) ||
+        e.transporter.toLowerCase().includes(search.toLowerCase())),
+  );
+
+  return (
+    <div className="space-y-6 animate-fade-in-down">
+      <div className="flex items-center gap-3 border-b pb-4">
+        <div className="bg-green-600 p-2 rounded-2xl text-white shadow-lg">
+          <CheckCircle size={20} />
+        </div>
+        <div>
+          <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase">
+            Inward Saved
+          </h2>
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+            {filtered.length} completed bilties
+          </p>
+        </div>
+      </div>
+      <div className="flex gap-3">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search bilty number, transporter, saved by..."
+          className="flex-1 border rounded-2xl p-3 font-bold bg-white outline-none focus:ring-2 focus:ring-green-500 text-sm"
+        />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="text-center py-16 text-gray-400">
+          <CheckCircle size={40} className="mx-auto mb-3 opacity-30" />
+          <p className="font-black uppercase text-sm">
+            No completed bilties yet
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((entry) => (
+            <div
+              key={entry.id}
+              className="bg-white rounded-[1.5rem] border border-green-100 shadow-sm overflow-hidden"
+            >
+              <div className="p-4 flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBilty(entry.biltyNumber)}
+                      className="font-black text-green-700 text-sm hover:text-green-900 hover:underline"
+                    >
+                      {entry.biltyNumber}
+                    </button>
+                    <span className="text-[9px] font-black bg-green-100 text-green-700 px-2 py-0.5 rounded-full uppercase">
+                      Completed
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5">
+                    {entry.transporter && (
+                      <p className="text-[10px] font-bold text-gray-500 uppercase">
+                        <span className="text-gray-400">Transport:</span>{" "}
+                        {entry.transporter}
+                      </p>
+                    )}
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">
+                      <span className="text-gray-400">By:</span> {entry.savedBy}
+                    </p>
+                    <p className="text-[10px] font-bold text-gray-500 uppercase">
+                      <span className="text-gray-400">On:</span>{" "}
+                      {entry.savedAt
+                        ? new Date(entry.savedAt).toLocaleDateString("en-IN")
+                        : "—"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {entry.items.map((itm, i) => (
+                      <span
+                        key={`${entry.id}-item-${i}`}
+                        className="text-[9px] font-black bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full"
+                      >
+                        {itm.itemName} ({itm.qty})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {currentUser.role === "admin" && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingEntry(entry)}
+                    className="shrink-0 p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition-colors"
+                    title="Edit entry (Admin only)"
+                  >
+                    <Edit2 size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Bilty History Panel */}
+      {selectedBilty &&
+        (() => {
+          const bNo = selectedBilty;
+          const inwardEntries = transactions.filter(
+            (t) =>
+              t.biltyNo?.toLowerCase() === bNo.toLowerCase() &&
+              (t.type === "INWARD" || t.type === "inward") &&
+              (!t.businessId || t.businessId === activeBusinessId),
+          );
+          const inwardEntry = inwardEntries[0] || null;
+          const entry = inwardSaved.find(
+            (e) => e.biltyNumber.toLowerCase() === bNo.toLowerCase(),
+          );
+          return (
+            <div className="fixed inset-0 bg-gray-900/60 z-[100] flex items-center justify-center p-4">
+              <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+                <div className="sticky top-0 bg-white border-b px-6 py-5 flex justify-between items-center rounded-t-[2.5rem] z-10">
+                  <div>
+                    <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">
+                      Inward Saved Detail
+                    </p>
+                    <h3 className="font-black text-gray-900 text-xl uppercase tracking-tight">
+                      {bNo}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBilty(null)}
+                    className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="p-6 space-y-4">
+                  {entry && (
+                    <>
+                      <div className="bg-green-50 border border-green-200 rounded-2xl p-4 space-y-1">
+                        <p className="text-[10px] font-black uppercase text-green-800 mb-2">
+                          Inward Details
+                        </p>
+                        <p className="text-xs font-bold text-gray-700">
+                          Saved by: <b>{entry.savedBy}</b>
+                        </p>
+                        <p className="text-xs font-bold text-gray-700">
+                          Date:{" "}
+                          <b>
+                            {entry.savedAt
+                              ? new Date(entry.savedAt).toLocaleDateString(
+                                  "en-IN",
+                                )
+                              : "—"}
+                          </b>
+                        </p>
+                        {entry.transporter && (
+                          <p className="text-xs font-bold text-gray-700">
+                            Transporter: <b>{entry.transporter}</b>
+                          </p>
+                        )}
+                        {entry.supplier && (
+                          <p className="text-xs font-bold text-gray-700">
+                            Supplier: <b>{entry.supplier}</b>
+                          </p>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-black uppercase text-gray-500">
+                          Items Received
+                        </p>
+                        {entry.items.map((itm) => (
+                          <div
+                            key={`${itm.itemName}-${itm.category}`}
+                            className="bg-gray-50 border rounded-xl p-3 text-xs"
+                          >
+                            <p className="font-black text-gray-800">
+                              {itm.itemName}{" "}
+                              <span className="text-gray-400">
+                                ({itm.category})
+                              </span>
+                            </p>
+                            <div className="flex gap-3 mt-1 text-gray-600">
+                              <span>
+                                Total Qty:{" "}
+                                <b className="text-gray-900">{itm.qty}</b>
+                              </span>
+                              {itm.shopQty > 0 && (
+                                <span>
+                                  Shop:{" "}
+                                  <b className="text-green-700">
+                                    {itm.shopQty}
+                                  </b>
+                                </span>
+                              )}
+                              {itm.godownQty > 0 && (
+                                <span>
+                                  Godown:{" "}
+                                  <b className="text-amber-700">
+                                    {itm.godownQty}
+                                  </b>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {inwardEntry?.baleItemsList &&
+                    inwardEntry.baleItemsList.length > 0 &&
+                    !entry && (
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-black uppercase text-gray-500">
+                          Items (from transaction record)
+                        </p>
+                        {inwardEntry.baleItemsList.map((bi) => (
+                          <div
+                            key={`${bi.itemName}-${bi.category}`}
+                            className="bg-gray-50 border rounded-xl p-3 text-xs"
+                          >
+                            <p className="font-black">
+                              {bi.itemName} ({bi.category})
+                            </p>
+                            <p className="text-gray-600 mt-0.5">
+                              Qty: {bi.qty}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+      {/* Admin Edit Modal */}
+      {editingEntry && currentUser.role === "admin" && (
+        <div className="fixed inset-0 bg-gray-900/60 z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto animate-fade-in-down">
+            <div className="sticky top-0 bg-white border-b px-6 py-5 flex justify-between items-center rounded-t-[2.5rem]">
+              <div>
+                <p className="text-[10px] font-black uppercase text-blue-600">
+                  Admin Edit
+                </p>
+                <h3 className="font-black text-gray-900 text-lg">
+                  {editingEntry.biltyNumber}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEntry(null)}
+                className="p-2 bg-gray-100 rounded-full"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <p className="text-[10px] font-black uppercase text-amber-700">
+                  Bilty number is locked (admin edit only)
+                </p>
+                <p className="font-black text-amber-900">
+                  {editingEntry.biltyNumber}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                  Transporter
+                </p>
+                <input
+                  type="text"
+                  value={editingEntry.transporter}
+                  onChange={(e) =>
+                    setEditingEntry({
+                      ...editingEntry,
+                      transporter: e.target.value,
+                    })
+                  }
+                  className="w-full border rounded-xl p-3 font-bold text-sm"
+                />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                  Supplier
+                </p>
+                <input
+                  type="text"
+                  value={editingEntry.supplier}
+                  onChange={(e) =>
+                    setEditingEntry({
+                      ...editingEntry,
+                      supplier: e.target.value,
+                    })
+                  }
+                  className="w-full border rounded-xl p-3 font-bold text-sm"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInwardSaved((prev) =>
+                      prev.map((e) =>
+                        e.id === editingEntry.id ? editingEntry : e,
+                      ),
+                    );
+                    setEditingEntry(null);
+                    showNotification("Entry updated", "success");
+                  }}
+                  className="flex-1 bg-blue-600 text-white font-black py-3 rounded-2xl text-xs uppercase"
+                >
+                  Save Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingEntry(null)}
+                  className="px-6 border font-black py-3 rounded-2xl text-xs uppercase"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SidebarButton({
   active,
   onClick,
@@ -8179,9 +9020,11 @@ export default function App() {
     transfer: "Transfers",
     sales: "Sales",
     history: "History Log",
+    inwardSaved: "Inward Saved",
     settings: "Admin Settings",
   });
   const [_inwardRecords, _setInwardRecords] = useState<InwardRecord[]>([]);
+  const [inwardSaved, setInwardSaved] = useState<InwardSavedEntry[]>([]);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(
     null,
   );
@@ -8453,6 +9296,12 @@ export default function App() {
                 icon={History}
                 label={tabNames.history}
               />
+              <SidebarButton
+                active={activeTab === "inwardSaved"}
+                onClick={() => setActiveTab("inwardSaved")}
+                icon={CheckCircle}
+                label={tabNames.inwardSaved}
+              />
             </>
           )}
           {currentUser.role === "admin" && (
@@ -8519,6 +9368,8 @@ export default function App() {
             transportTracking={transportTracking}
             setMoveToQueueData={setMoveToQueueData}
             setActiveTabFromTransit={setActiveTab}
+            pendingParcels={pendingParcels}
+            transactions={transactions}
           />
         )}
         {activeTab === "warehouse" && currentUser.role !== "supplier" && (
@@ -8567,6 +9418,7 @@ export default function App() {
             transactions={transactions}
             setInventory={setInventory}
             setConfirmDialog={setConfirmDialog}
+            setInwardSaved={setInwardSaved}
           />
         )}
         {activeTab === "opening" && currentUser.role === "admin" && (
@@ -8616,6 +9468,16 @@ export default function App() {
             pendingParcels={pendingParcels}
             categories={categories}
             godowns={godowns}
+            showNotification={showNotification}
+          />
+        )}
+        {activeTab === "inwardSaved" && currentUser.role !== "supplier" && (
+          <InwardSavedTab
+            inwardSaved={inwardSaved}
+            setInwardSaved={setInwardSaved}
+            currentUser={currentUser}
+            transactions={transactions}
+            activeBusinessId={activeBusinessId}
             showNotification={showNotification}
           />
         )}
@@ -8787,6 +9649,12 @@ export default function App() {
                 label="Sales"
               />
             )}
+            <NavButton
+              active={activeTab === "inwardSaved"}
+              onClick={() => setActiveTab("inwardSaved")}
+              icon={CheckCircle}
+              label="Saved"
+            />
           </>
         )}
         {currentUser.role === "admin" && (
