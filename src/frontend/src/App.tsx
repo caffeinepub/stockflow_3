@@ -2,6 +2,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowRightLeft,
+  BarChart2,
   Box,
   CheckCircle,
   ChevronDown,
@@ -30,6 +31,15 @@ import {
 } from "lucide-react";
 import type React from "react";
 import { useEffect, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 /* ================= TYPES ================= */
 interface CategoryField {
@@ -218,7 +228,6 @@ const getTotalGodownStock = (item: InventoryItem) => {
   return Object.values(item.godowns).reduce((a, b) => a + Number(b || 0), 0);
 };
 
-/* ================= SHARED COMPONENTS ================= */
 function BiltyInput({
   prefixOptions,
   prefix,
@@ -226,6 +235,7 @@ function BiltyInput({
   number,
   setNumber,
   onSearch,
+  disabled,
 }: {
   prefixOptions?: string[];
   prefix: string;
@@ -233,6 +243,7 @@ function BiltyInput({
   number: string;
   setNumber: (v: string) => void;
   onSearch?: (p: string, n: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1 w-full">
@@ -242,11 +253,12 @@ function BiltyInput({
       <div className="flex gap-2">
         <select
           value={prefix}
+          disabled={disabled}
           onChange={(e) => {
             setPrefix(e.target.value);
             if (onSearch) onSearch(e.target.value, number);
           }}
-          className="w-1/3 border rounded-xl p-2.5 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold bg-gray-50 uppercase"
+          className={`w-1/3 border rounded-xl p-2.5 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold uppercase ${disabled ? "bg-gray-100 opacity-50 cursor-not-allowed" : "bg-gray-50"}`}
         >
           {(prefixOptions || ["0"]).map((p) => (
             <option key={p} value={p}>
@@ -280,7 +292,8 @@ function BiltyInput({
             setNumber(numericOnly);
             if (onSearch) onSearch(prefix, numericOnly);
           }}
-          className="w-2/3 border rounded-xl p-2.5 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold"
+          disabled={disabled}
+          className={`w-2/3 border rounded-xl p-2.5 outline-none focus:ring-2 focus:ring-blue-500 text-sm font-bold ${disabled ? "bg-gray-100 opacity-50 cursor-not-allowed" : ""}`}
           placeholder="Numeric Part"
         />
       </div>
@@ -636,6 +649,7 @@ function TransitTab({
   setActiveTabFromTransit,
   pendingParcels,
   transactions,
+  inwardSaved,
 }: {
   transitGoods: TransitRecord[];
   setTransitGoods: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
@@ -654,6 +668,7 @@ function TransitTab({
   setActiveTabFromTransit?: (t: string) => void;
   pendingParcels?: PendingParcel[];
   transactions?: Transaction[];
+  inwardSaved?: InwardSavedEntry[];
 }) {
   const [showForm, setShowForm] = useState(false);
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
@@ -671,6 +686,10 @@ function TransitTab({
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [transitFilterMode, setTransitFilterMode] = useState<
+    "daterange" | "days"
+  >("daterange");
+  const [transitMinDays, setTransitMinDays] = useState("");
 
   const downloadTemplate = () => {
     const headers =
@@ -764,6 +783,20 @@ function TransitTab({
         `Bilty ${bNo} has already been processed in Inward!`,
         "error",
       );
+    // Check if bilty exists in Inward Saved
+    const isDupeInwardSaved = (inwardSaved || []).some(
+      (s) =>
+        (!s.businessId || s.businessId === activeBusinessId) &&
+        (s.biltyNumber?.toLowerCase() === bNo.toLowerCase() ||
+          (s.biltyNumber || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            bNo.toLowerCase() ||
+          (s.baseNumber || "").toLowerCase() === bNo.toLowerCase()),
+    );
+    if (isDupeInwardSaved)
+      return showNotification(
+        `Bilty ${bNo} is already in Inward Saved!`,
+        "error",
+      );
     if (pkgCount > 1) {
       const newEntries: TransitRecord[] = [];
       for (let i = 1; i <= pkgCount; i++) {
@@ -839,8 +872,15 @@ function TransitTab({
       !g.itemName?.toLowerCase().includes(searchTerm.toLowerCase())
     )
       return false;
-    if (filterDateFrom && g.date < filterDateFrom) return false;
-    if (filterDateTo && g.date > filterDateTo) return false;
+    if (transitFilterMode === "daterange") {
+      if (filterDateFrom && g.date < filterDateFrom) return false;
+      if (filterDateTo && g.date > filterDateTo) return false;
+    } else if (transitFilterMode === "days" && transitMinDays) {
+      const daysInTransit = g.date
+        ? Math.ceil((Date.now() - new Date(g.date).getTime()) / 86400000)
+        : 0;
+      if (daysInTransit < Number(transitMinDays)) return false;
+    }
     return true;
   });
   filtered = [...filtered].sort((a, b) =>
@@ -974,7 +1014,7 @@ function TransitTab({
             </div>
             <div>
               <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-                Date
+                Bilty Date
               </p>
               <input
                 type="date"
@@ -1011,23 +1051,51 @@ function TransitTab({
             className="w-full pl-10 pr-4 py-3 border rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-sm bg-white shadow-sm"
           />
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={filterDateFrom}
-            onChange={(e) => setFilterDateFrom(e.target.value)}
-            className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="From"
-          />
-          <span className="text-gray-400 text-xs font-bold">–</span>
-          <input
-            type="date"
-            value={filterDateTo}
-            onChange={(e) => setFilterDateTo(e.target.value)}
-            className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="To"
-          />
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
+          <button
+            type="button"
+            onClick={() => setTransitFilterMode("daterange")}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-colors ${transitFilterMode === "daterange" ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500"}`}
+          >
+            Date Range
+          </button>
+          <button
+            type="button"
+            onClick={() => setTransitFilterMode("days")}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-colors ${transitFilterMode === "days" ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500"}`}
+          >
+            Days in Transit
+          </button>
         </div>
+        {transitFilterMode === "daterange" ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={filterDateFrom}
+              onChange={(e) => setFilterDateFrom(e.target.value)}
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <span className="text-gray-400 text-xs font-bold">–</span>
+            <input
+              type="date"
+              value={filterDateTo}
+              onChange={(e) => setFilterDateTo(e.target.value)}
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-gray-500">Min Days ≥</span>
+            <input
+              type="number"
+              min="0"
+              value={transitMinDays}
+              onChange={(e) => setTransitMinDays(e.target.value)}
+              placeholder="e.g. 5"
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500 w-24"
+            />
+          </div>
+        )}
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value as "asc" | "desc")}
@@ -1036,12 +1104,13 @@ function TransitTab({
           <option value="desc">Newest First</option>
           <option value="asc">Oldest First</option>
         </select>
-        {(filterDateFrom || filterDateTo) && (
+        {(filterDateFrom || filterDateTo || transitMinDays) && (
           <button
             type="button"
             onClick={() => {
               setFilterDateFrom("");
               setFilterDateTo("");
+              setTransitMinDays("");
             }}
             className="text-xs text-red-500 font-bold bg-red-50 px-3 py-2 rounded-xl"
           >
@@ -1178,6 +1247,7 @@ function WarehouseTab({
   moveToQueueData,
   clearMoveToQueueData,
   transactions,
+  inwardSaved: _inwardSavedQueue,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -1199,6 +1269,7 @@ function WarehouseTab({
   moveToQueueData?: TransitRecord | null;
   clearMoveToQueueData?: () => void;
   transactions?: Transaction[];
+  inwardSaved?: InwardSavedEntry[];
 }) {
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
@@ -1218,6 +1289,10 @@ function WarehouseTab({
   const [filterCategory, setFilterCategory] = useState("");
   const [filterItemName, setFilterItemName] = useState("");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [queueFilterMode, setQueueFilterMode] = useState<"daterange" | "days">(
+    "daterange",
+  );
+  const [queueMinDays, setQueueMinDays] = useState("");
   const [baleRows, setBaleRows] = useState<
     {
       biltyLabel: string;
@@ -1501,8 +1576,15 @@ function WarehouseTab({
     )
       return false;
     const pDate = p.arrivalDate || p.dateReceived;
-    if (filterDateFrom && pDate < filterDateFrom) return false;
-    if (filterDateTo && pDate > filterDateTo) return false;
+    if (queueFilterMode === "daterange") {
+      if (filterDateFrom && pDate < filterDateFrom) return false;
+      if (filterDateTo && pDate > filterDateTo) return false;
+    } else if (queueFilterMode === "days" && queueMinDays) {
+      const daysInQueue = pDate
+        ? Math.ceil((Date.now() - new Date(pDate).getTime()) / 86400000)
+        : 0;
+      if (daysInQueue < Number(queueMinDays)) return false;
+    }
     if (filterCategory && (p.itemCategory || p.category) !== filterCategory)
       return false;
     if (
@@ -1714,19 +1796,51 @@ function WarehouseTab({
             className="w-full pl-10 pr-4 py-3 border rounded-2xl outline-none focus:ring-2 focus:ring-amber-500 font-bold text-sm bg-white shadow-sm"
           />
         </div>
-        <input
-          type="date"
-          value={filterDateFrom}
-          onChange={(e) => setFilterDateFrom(e.target.value)}
-          className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none"
-        />
-        <span className="text-gray-400 text-xs">–</span>
-        <input
-          type="date"
-          value={filterDateTo}
-          onChange={(e) => setFilterDateTo(e.target.value)}
-          className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none"
-        />
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
+          <button
+            type="button"
+            onClick={() => setQueueFilterMode("daterange")}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-colors ${queueFilterMode === "daterange" ? "bg-white text-amber-700 shadow-sm" : "text-gray-500"}`}
+          >
+            Date Range
+          </button>
+          <button
+            type="button"
+            onClick={() => setQueueFilterMode("days")}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-colors ${queueFilterMode === "days" ? "bg-white text-amber-700 shadow-sm" : "text-gray-500"}`}
+          >
+            Days in Queue
+          </button>
+        </div>
+        {queueFilterMode === "daterange" ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={filterDateFrom}
+              onChange={(e) => setFilterDateFrom(e.target.value)}
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none"
+            />
+            <span className="text-gray-400 text-xs">–</span>
+            <input
+              type="date"
+              value={filterDateTo}
+              onChange={(e) => setFilterDateTo(e.target.value)}
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none"
+            />
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-gray-500">Min Days ≥</span>
+            <input
+              type="number"
+              min="0"
+              value={queueMinDays}
+              onChange={(e) => setQueueMinDays(e.target.value)}
+              placeholder="e.g. 3"
+              className="border rounded-xl p-2.5 text-xs font-bold bg-white outline-none w-24"
+            />
+          </div>
+        )}
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value as "asc" | "desc")}
@@ -1738,7 +1852,8 @@ function WarehouseTab({
         {(filterDateFrom ||
           filterDateTo ||
           filterCategory ||
-          filterItemName) && (
+          filterItemName ||
+          queueMinDays) && (
           <button
             type="button"
             onClick={() => {
@@ -1746,6 +1861,7 @@ function WarehouseTab({
               setFilterDateTo("");
               setFilterCategory("");
               setFilterItemName("");
+              setQueueMinDays("");
             }}
             className="text-xs text-red-500 font-bold bg-red-50 px-3 py-2 rounded-xl"
           >
@@ -1833,6 +1949,23 @@ function WarehouseTab({
                         Arrived:{" "}
                         <span className="text-gray-700">
                           {p.arrivalDate || p.dateReceived}
+                        </span>
+                      </p>
+                    )}
+                    {(p.arrivalDate || p.dateReceived) && (
+                      <p>
+                        Days in Queue:{" "}
+                        <span
+                          className={`font-black ${Math.ceil((Date.now() - new Date(p.arrivalDate || p.dateReceived || "").getTime()) / 86400000) > 7 ? "text-orange-600" : "text-gray-700"}`}
+                        >
+                          {Math.ceil(
+                            (Date.now() -
+                              new Date(
+                                p.arrivalDate || p.dateReceived || "",
+                              ).getTime()) /
+                              86400000,
+                          )}{" "}
+                          days
                         </span>
                       </p>
                     )}
@@ -2054,6 +2187,7 @@ function InwardTab({
   const [queueBiltySearch, setQueueBiltySearch] = useState("");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [inwardPackages, setInwardPackages] = useState("1");
+  const [biltyLocked, setBiltyLocked] = useState(false);
   const [perBaleData, setPerBaleData] = useState<
     {
       label: string;
@@ -2116,10 +2250,10 @@ function InwardTab({
     const bNo =
       biltyPrefix === "0" ? biltyNumber : `${biltyPrefix}-${biltyNumber}`;
     const pkgCount = Number(inwardPackages) || 1;
-    if (biltyNumber && pkgCount > 1) {
+    if (biltyNumber) {
       setPerBaleData(
         Array.from({ length: pkgCount }, (_, i) => {
-          const label = `${bNo}X${pkgCount}(${i + 1})`;
+          const label = pkgCount === 1 ? bNo : `${bNo}X${pkgCount}(${i + 1})`;
           const existingTx = transactions.find(
             (tx) =>
               tx.type === "INWARD" &&
@@ -2203,6 +2337,7 @@ function InwardTab({
     const match = queueMatch || transitMatch;
     if (match) {
       setMatchedDetails(match);
+      setBiltyLocked(true);
       // Extract package count from postfix or packages field
       const postfixMatch = ((match as TransitRecord).biltyNo || "").match(
         /X(\d+)\(\d+\)$/i,
@@ -2227,6 +2362,7 @@ function InwardTab({
       showNotification("Found Bilty! Data auto-filled.", "success");
     } else {
       setMatchedDetails(null);
+      setBiltyLocked(false);
     }
   };
 
@@ -2251,6 +2387,7 @@ function InwardTab({
       setBiltyNumber(biltyStr);
     }
     setMatchedDetails(openingParcel as unknown as PendingParcel);
+    setBiltyLocked(true);
     setItemForm((prev) => ({
       ...prev,
       itemName: (openingParcel as PendingParcel).itemName || prev.itemName,
@@ -2326,55 +2463,19 @@ function InwardTab({
         return;
       }
     }
-    // Fix 6: Create new inventory items only at save time (not before)
-    for (const item of baleItems) {
-      if (item.itemName && item.category) {
-        const exists = Object.values(inventory).some(
-          (inv) =>
-            (!inv.businessId || inv.businessId === activeBusinessId) &&
-            inv.category === item.category &&
-            inv.itemName.toLowerCase() === item.itemName.toLowerCase(),
-        );
-        if (!exists) {
-          const newSku = generateSku(
-            item.category,
-            item.itemName,
-            {},
-            "0",
-            activeBusinessId,
-          );
-          setInventory((prev) => ({
-            ...prev,
-            [newSku]: {
-              sku: newSku,
-              category: item.category,
-              itemName: item.itemName,
-              attributes: {},
-              shop: 0,
-              godowns: {},
-              saleRate: 0,
-              purchaseRate: 0,
-              businessId: activeBusinessId,
-            },
-          }));
-        }
-      }
-    }
-    for (const item of baleItems) {
-      if (Number(item.shopQty) > 0)
-        updateStock(
-          item.sku,
-          {
-            ...item,
-            saleRate: Number(item.saleRate),
-            purchaseRate: Number(item.purchaseRate),
-          },
-          Number(item.shopQty),
-          0,
-          "Main Godown",
-        );
-      for (const [g, q] of Object.entries(item.godownQuants)) {
-        if (Number(q) > 0)
+    // Items are created by updateStock; no pre-creation needed
+    const newItemsToCreate = baleItems.filter((item) => {
+      if (!item.itemName || !item.category) return false;
+      return !Object.values(inventory).some(
+        (inv) =>
+          (!inv.businessId || inv.businessId === activeBusinessId) &&
+          inv.category === item.category &&
+          inv.itemName.toLowerCase() === item.itemName.toLowerCase(),
+      );
+    });
+    const doFinalSave = () => {
+      for (const item of baleItems) {
+        if (Number(item.shopQty) > 0)
           updateStock(
             item.sku,
             {
@@ -2382,11 +2483,39 @@ function InwardTab({
               saleRate: Number(item.saleRate),
               purchaseRate: Number(item.purchaseRate),
             },
+            Number(item.shopQty),
             0,
-            Number(q),
-            g,
+            "Main Godown",
           );
+        for (const [g, q] of Object.entries(item.godownQuants)) {
+          if (Number(q) > 0)
+            updateStock(
+              item.sku,
+              {
+                ...item,
+                saleRate: Number(item.saleRate),
+                purchaseRate: Number(item.purchaseRate),
+              },
+              0,
+              Number(q),
+              g,
+            );
+        }
       }
+    };
+    if (newItemsToCreate.length > 0) {
+      const names = newItemsToCreate
+        .map((i) => `${i.itemName} (${i.category})`)
+        .join(", ");
+      setConfirmDialog({
+        message: `Create new inventory items?
+${names}`,
+        onConfirm: () => {
+          doFinalSave();
+        },
+      });
+    } else {
+      doFinalSave();
     }
     const bNo = isDirectEntry
       ? `DIRECT-${directReference || Date.now().toString().slice(-4)}`
@@ -2454,10 +2583,49 @@ function InwardTab({
           prev.filter((p) => p.biltyNo?.toLowerCase() !== bNo.toLowerCase()),
         );
       }
+      // Also save to inwardSaved
+      if (setInwardSaved) {
+        setInwardSaved((prev) => [
+          {
+            id: Date.now(),
+            biltyNumber: bNo,
+            baseNumber: bNo.replace(/X\d+\(\d+\)$/i, ""),
+            packages: "1",
+            items: baleItems.map((i) => ({
+              category: i.category,
+              itemName: i.itemName,
+              qty:
+                (Number(i.shopQty) || 0) +
+                Object.values(i.godownQuants).reduce(
+                  (a, b) => a + Number(b || 0),
+                  0,
+                ),
+              shopQty: Number(i.shopQty) || 0,
+              godownQty: Object.values(i.godownQuants).reduce(
+                (a, b) => a + Number(b || 0),
+                0,
+              ),
+              saleRate: Number(i.saleRate) || 0,
+              purchaseRate: Number(i.purchaseRate) || 0,
+              attributes: i.attributes || {},
+            })),
+            savedBy: currentUser.username,
+            savedAt: new Date().toISOString(),
+            transporter: (matchedDetails as TransitRecord)?.transportName || "",
+            supplier:
+              (matchedDetails as TransitRecord)?.supplierName ||
+              (matchedDetails as PendingParcel)?.supplier ||
+              "",
+            businessId: activeBusinessId,
+          },
+          ...prev,
+        ]);
+      }
     }
     setBaleItems([]);
     setBiltyNumber("");
     setMatchedDetails(null);
+    setBiltyLocked(false);
     setOpeningParcel(null);
     setDirectReference("");
     showNotification(
@@ -2687,6 +2855,7 @@ function InwardTab({
               setIsDirectEntry(!isDirectEntry);
               setBiltyNumber("");
               setMatchedDetails(null);
+              setBiltyLocked(false);
             }}
             className="text-[10px] font-black text-blue-600 bg-blue-50 px-3 py-1.5 rounded-xl uppercase tracking-widest hover:bg-blue-100 transition-colors"
           >
@@ -2716,6 +2885,7 @@ function InwardTab({
                 number={biltyNumber}
                 setNumber={setBiltyNumber}
                 onSearch={handleLookup}
+                disabled={biltyLocked}
               />
               <div className="min-w-[120px]">
                 <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
@@ -2725,11 +2895,24 @@ function InwardTab({
                   type="number"
                   min="1"
                   value={inwardPackages}
+                  disabled={biltyLocked}
                   onChange={(e) => setInwardPackages(e.target.value || "1")}
-                  className="w-full border rounded-xl p-2.5 font-bold bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full border rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-500 min-h-[44px] ${biltyLocked ? "bg-gray-100 opacity-50 cursor-not-allowed" : "bg-gray-50 focus:bg-white"}`}
                 />
               </div>
             </div>
+            {biltyLocked && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBiltyLocked(false);
+                  setMatchedDetails(null);
+                }}
+                className="text-[10px] font-black text-orange-600 bg-orange-50 px-3 py-1.5 rounded-xl uppercase tracking-widest hover:bg-orange-100 transition-colors mt-1"
+              >
+                🔓 Change Bilty
+              </button>
+            )}
             {matchedDetails && (
               <div className="bg-green-50 text-green-700 p-3 rounded-xl border border-green-200 text-xs font-bold mt-2">
                 <div className="flex items-center gap-2 mb-1">
@@ -3423,43 +3606,7 @@ function InwardTab({
                       })
                       .map((itm) => `${itm.itemName} (${itm.category})`);
                     const doSave = () => {
-                      // Create new inventory items
-                      for (const itm of bale.items) {
-                        if (itm.itemName && itm.category) {
-                          const exists = Object.values(inventory).some(
-                            (inv) =>
-                              (!inv.businessId ||
-                                inv.businessId === activeBusinessId) &&
-                              inv.category === itm.category &&
-                              inv.itemName.toLowerCase() ===
-                                itm.itemName.toLowerCase(),
-                          );
-                          if (!exists) {
-                            const newSku = generateSku(
-                              itm.category,
-                              itm.itemName,
-                              {},
-                              "0",
-                              activeBusinessId,
-                            );
-                            setInventory((prev) => ({
-                              ...prev,
-                              [newSku]: {
-                                sku: newSku,
-                                category: itm.category,
-                                itemName: itm.itemName,
-                                attributes: {},
-                                shop: 0,
-                                godowns: {},
-                                saleRate: 0,
-                                purchaseRate: 0,
-                                businessId: activeBusinessId,
-                              },
-                            }));
-                          }
-                        }
-                      }
-                      // Update stock
+                      // Update stock (updateStock handles new item creation automatically)
                       for (const itm of bale.items) {
                         if (Number(itm.shopQty) > 0)
                           updateStock(
@@ -4028,6 +4175,7 @@ function InwardTab({
                 setInwardPackages("1");
                 setBiltyNumber("");
                 setMatchedDetails(null);
+                setBiltyLocked(false);
                 setOpeningParcel(null);
                 showNotification(
                   `Processed ${perBaleData.filter((b) => b.received).length} received, ${perBaleData.filter((b) => !b.received).length} pending bales`,
@@ -4042,268 +4190,270 @@ function InwardTab({
         </div>
       )}
 
-      {showItemForm && Number(inwardPackages) <= 1 && (
-        <form
-          onSubmit={addItemToBale}
-          className="bg-white p-6 sm:p-8 rounded-[2.5rem] border shadow-xl space-y-6 animate-fade-in-down"
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
-                Category *
-              </p>
-              <select
-                required
-                value={itemForm.category}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, category: e.target.value })
-                }
-                className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-              >
-                <option value="">Select Category</option>
-                {categories.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <div className="flex items-center justify-between ml-1 mb-1">
-                <p className="text-[10px] font-black uppercase text-gray-400">
-                  Item Name *
-                </p>
-                <label className="flex items-center gap-1 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isNewItemMode}
-                    onChange={(e) => {
-                      setIsNewItemMode(e.target.checked);
-                      setItemForm({ ...itemForm, itemName: "" });
-                    }}
-                    className="w-3 h-3 accent-blue-600"
-                  />
-                  <span className="text-[10px] font-black uppercase text-blue-600">
-                    ＋ New Item
-                  </span>
-                </label>
-              </div>
-              {isNewItemMode ? (
-                <input
-                  type="text"
-                  value={itemForm.itemName}
-                  onChange={(e) =>
-                    setItemForm({ ...itemForm, itemName: e.target.value })
-                  }
-                  placeholder="Type new item name"
-                  className="w-full border rounded-xl p-3 font-bold bg-yellow-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm border-blue-300"
-                />
-              ) : (
-                <ItemNameCombo
-                  category={itemForm.category}
-                  value={itemForm.itemName}
-                  onChange={(val) =>
-                    setItemForm({ ...itemForm, itemName: val })
-                  }
-                  inventory={inventory}
-                  activeBusinessId={activeBusinessId}
-                />
-              )}
-            </div>
-          </div>
-          {/* Total Qty in Bale - permanent, always shown */}
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
-            <div className="flex items-start gap-4">
-              <div className="flex-1">
-                <p className="text-[10px] font-black uppercase text-blue-800 ml-1">
-                  Total Qty in Bale
-                </p>
-                <input
-                  type="number"
-                  value={totalQty}
-                  onChange={(e) => setTotalQty(e.target.value)}
-                  placeholder="Enter total qty in this bale"
-                  className="w-full border border-blue-300 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
-                />
-              </div>
-              <div className="shrink-0 pt-5">
-                {totalQty &&
-                  (() => {
-                    const savedTotal = baleItems.reduce(
-                      (sum, i) =>
-                        sum +
-                        (Number(i.shopQty) || 0) +
-                        Object.values(i.godownQuants).reduce(
-                          (a, b) => a + Number(b || 0),
-                          0,
-                        ),
-                      0,
-                    );
-                    const currentFormTotal =
-                      (Number(itemForm.shopQty) || 0) +
-                      Object.values(itemForm.godownQuants).reduce(
-                        (a, b) => a + Number(b || 0),
-                        0,
-                      );
-                    const grandTotal = savedTotal + currentFormTotal;
-                    const expected = Number(totalQty);
-                    return grandTotal === expected ? (
-                      <span className="text-green-700 text-[10px] font-black bg-green-100 border border-green-300 px-3 py-2 rounded-xl block">
-                        ✓ {grandTotal}/{expected}
-                      </span>
-                    ) : (
-                      <span className="text-orange-700 text-[10px] font-black bg-orange-100 border border-orange-300 px-3 py-2 rounded-xl block">
-                        ⚠ {grandTotal}/{expected}
-                      </span>
-                    );
-                  })()}
-              </div>
-            </div>
-          </div>
-          {selectedCat && (
-            <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {selectedCat.fields.map((f) => (
-                <div key={f.name}>
-                  <p className="text-[10px] font-black uppercase text-blue-900 ml-1">
-                    {f.name}
-                  </p>
-                  {f.type === "select" ? (
-                    <select
-                      value={itemForm.attributes[f.name] || ""}
-                      onChange={(e) =>
-                        setItemForm({
-                          ...itemForm,
-                          attributes: {
-                            ...itemForm.attributes,
-                            [f.name]: e.target.value,
-                          },
-                        })
-                      }
-                      className="w-full border border-blue-200 rounded-xl p-2.5 font-bold text-sm bg-white"
-                    >
-                      <option value="">-</option>
-                      {(f.options || []).map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={itemForm.attributes[f.name] || ""}
-                      onChange={(e) =>
-                        setItemForm({
-                          ...itemForm,
-                          attributes: {
-                            ...itemForm.attributes,
-                            [f.name]: e.target.value,
-                          },
-                        })
-                      }
-                      className="w-full border border-blue-200 rounded-xl p-2.5 font-bold text-sm bg-white"
-                    />
-                  )}
-                </div>
-              ))}
-              <DynamicFields
-                fields={customColumns}
-                values={itemForm.customData}
-                onChange={(k, v) =>
-                  setItemForm({
-                    ...itemForm,
-                    customData: { ...itemForm.customData, [k]: v },
-                  })
-                }
-              />
-            </div>
-          )}
-          <div className="bg-green-50 p-6 rounded-3xl border border-green-200">
-            <h4 className="text-[10px] font-black text-green-900 uppercase tracking-widest mb-4 ml-1">
-              Distribution
-            </h4>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      {showItemForm &&
+        Number(inwardPackages) <= 1 &&
+        perBaleData.length === 0 && (
+          <form
+            onSubmit={addItemToBale}
+            className="bg-white p-6 sm:p-8 rounded-[2.5rem] border shadow-xl space-y-6 animate-fade-in-down"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <p className="text-[10px] font-black uppercase text-green-700 ml-1">
-                  Shop Qty
+                <p className="text-[10px] font-black uppercase text-gray-400 ml-1">
+                  Category *
                 </p>
-                <input
-                  type="number"
-                  placeholder="Shop"
-                  value={itemForm.shopQty}
+                <select
+                  required
+                  value={itemForm.category}
                   onChange={(e) =>
-                    setItemForm({ ...itemForm, shopQty: e.target.value })
+                    setItemForm({ ...itemForm, category: e.target.value })
                   }
-                  className="w-full border-2 border-green-300 rounded-xl p-3 font-black text-green-700 text-lg outline-none focus:bg-white"
-                />
+                  className="w-full border rounded-xl p-3 font-bold bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  <option value="">Select Category</option>
+                  {categories.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
               </div>
-              {godowns.map((g) => (
-                <div key={g}>
-                  <p className="text-[10px] font-black uppercase text-amber-700 ml-1 truncate">
-                    {g}
+              <div>
+                <div className="flex items-center justify-between ml-1 mb-1">
+                  <p className="text-[10px] font-black uppercase text-gray-400">
+                    Item Name *
+                  </p>
+                  <label className="flex items-center gap-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isNewItemMode}
+                      onChange={(e) => {
+                        setIsNewItemMode(e.target.checked);
+                        setItemForm({ ...itemForm, itemName: "" });
+                      }}
+                      className="w-3 h-3 accent-blue-600"
+                    />
+                    <span className="text-[10px] font-black uppercase text-blue-600">
+                      ＋ New Item
+                    </span>
+                  </label>
+                </div>
+                {isNewItemMode ? (
+                  <input
+                    type="text"
+                    value={itemForm.itemName}
+                    onChange={(e) =>
+                      setItemForm({ ...itemForm, itemName: e.target.value })
+                    }
+                    placeholder="Type new item name"
+                    className="w-full border rounded-xl p-3 font-bold bg-yellow-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm border-blue-300"
+                  />
+                ) : (
+                  <ItemNameCombo
+                    category={itemForm.category}
+                    value={itemForm.itemName}
+                    onChange={(val) =>
+                      setItemForm({ ...itemForm, itemName: val })
+                    }
+                    inventory={inventory}
+                    activeBusinessId={activeBusinessId}
+                  />
+                )}
+              </div>
+            </div>
+            {/* Total Qty in Bale - permanent, always shown */}
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+              <div className="flex items-start gap-4">
+                <div className="flex-1">
+                  <p className="text-[10px] font-black uppercase text-blue-800 ml-1">
+                    Total Qty in Bale
                   </p>
                   <input
                     type="number"
-                    placeholder={g}
-                    value={itemForm.godownQuants[g] || ""}
-                    onChange={(e) =>
-                      setItemForm({
-                        ...itemForm,
-                        godownQuants: {
-                          ...itemForm.godownQuants,
-                          [g]: e.target.value,
-                        },
-                      })
-                    }
-                    className="w-full border-2 border-amber-200 rounded-xl p-3 font-black text-amber-700 text-lg outline-none focus:bg-white"
+                    value={totalQty}
+                    onChange={(e) => setTotalQty(e.target.value)}
+                    placeholder="Enter total qty in this bale"
+                    className="w-full border border-blue-300 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
                   />
                 </div>
-              ))}
+                <div className="shrink-0 pt-5">
+                  {totalQty &&
+                    (() => {
+                      const savedTotal = baleItems.reduce(
+                        (sum, i) =>
+                          sum +
+                          (Number(i.shopQty) || 0) +
+                          Object.values(i.godownQuants).reduce(
+                            (a, b) => a + Number(b || 0),
+                            0,
+                          ),
+                        0,
+                      );
+                      const currentFormTotal =
+                        (Number(itemForm.shopQty) || 0) +
+                        Object.values(itemForm.godownQuants).reduce(
+                          (a, b) => a + Number(b || 0),
+                          0,
+                        );
+                      const grandTotal = savedTotal + currentFormTotal;
+                      const expected = Number(totalQty);
+                      return grandTotal === expected ? (
+                        <span className="text-green-700 text-[10px] font-black bg-green-100 border border-green-300 px-3 py-2 rounded-xl block">
+                          ✓ {grandTotal}/{expected}
+                        </span>
+                      ) : (
+                        <span className="text-orange-700 text-[10px] font-black bg-orange-100 border border-orange-300 px-3 py-2 rounded-xl block">
+                          ⚠ {grandTotal}/{expected}
+                        </span>
+                      );
+                    })()}
+                </div>
+              </div>
             </div>
-          </div>
-          <div
-            className={`grid gap-6 ${currentUser.role === "staff" ? "grid-cols-1" : "grid-cols-2"}`}
-          >
-            <div>
-              <p className="text-[10px] font-black uppercase text-blue-600 ml-1">
-                Sale Rate (₹) *
-              </p>
-              <input
-                required
-                type="number"
-                value={itemForm.saleRate}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, saleRate: e.target.value })
-                }
-                className="w-full border-2 border-blue-200 rounded-xl p-3 font-black text-blue-700 text-lg outline-none focus:bg-white"
-              />
-            </div>
-            {currentUser.role !== "staff" && (
-              <div>
-                <p className="text-[10px] font-black uppercase text-gray-500 ml-1">
-                  Pur. Rate (₹)
-                </p>
-                <input
-                  type="number"
-                  value={itemForm.purchaseRate}
-                  onChange={(e) =>
-                    setItemForm({ ...itemForm, purchaseRate: e.target.value })
+            {selectedCat && (
+              <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                {selectedCat.fields.map((f) => (
+                  <div key={f.name}>
+                    <p className="text-[10px] font-black uppercase text-blue-900 ml-1">
+                      {f.name}
+                    </p>
+                    {f.type === "select" ? (
+                      <select
+                        value={itemForm.attributes[f.name] || ""}
+                        onChange={(e) =>
+                          setItemForm({
+                            ...itemForm,
+                            attributes: {
+                              ...itemForm.attributes,
+                              [f.name]: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full border border-blue-200 rounded-xl p-2.5 font-bold text-sm bg-white"
+                      >
+                        <option value="">-</option>
+                        {(f.options || []).map((o) => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={itemForm.attributes[f.name] || ""}
+                        onChange={(e) =>
+                          setItemForm({
+                            ...itemForm,
+                            attributes: {
+                              ...itemForm.attributes,
+                              [f.name]: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full border border-blue-200 rounded-xl p-2.5 font-bold text-sm bg-white"
+                      />
+                    )}
+                  </div>
+                ))}
+                <DynamicFields
+                  fields={customColumns}
+                  values={itemForm.customData}
+                  onChange={(k, v) =>
+                    setItemForm({
+                      ...itemForm,
+                      customData: { ...itemForm.customData, [k]: v },
+                    })
                   }
-                  className="w-full border rounded-xl p-3 font-black text-gray-600 outline-none focus:bg-white"
                 />
               </div>
             )}
-          </div>
-          <button
-            type="submit"
-            className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-transform active:scale-95 text-xs"
-          >
-            Add Item To Bale List
-          </button>
-        </form>
-      )}
+            <div className="bg-green-50 p-6 rounded-3xl border border-green-200">
+              <h4 className="text-[10px] font-black text-green-900 uppercase tracking-widest mb-4 ml-1">
+                Distribution
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-[10px] font-black uppercase text-green-700 ml-1">
+                    Shop Qty
+                  </p>
+                  <input
+                    type="number"
+                    placeholder="Shop"
+                    value={itemForm.shopQty}
+                    onChange={(e) =>
+                      setItemForm({ ...itemForm, shopQty: e.target.value })
+                    }
+                    className="w-full border-2 border-green-300 rounded-xl p-3 font-black text-green-700 text-lg outline-none focus:bg-white"
+                  />
+                </div>
+                {godowns.map((g) => (
+                  <div key={g}>
+                    <p className="text-[10px] font-black uppercase text-amber-700 ml-1 truncate">
+                      {g}
+                    </p>
+                    <input
+                      type="number"
+                      placeholder={g}
+                      value={itemForm.godownQuants[g] || ""}
+                      onChange={(e) =>
+                        setItemForm({
+                          ...itemForm,
+                          godownQuants: {
+                            ...itemForm.godownQuants,
+                            [g]: e.target.value,
+                          },
+                        })
+                      }
+                      className="w-full border-2 border-amber-200 rounded-xl p-3 font-black text-amber-700 text-lg outline-none focus:bg-white"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div
+              className={`grid gap-6 ${currentUser.role === "staff" ? "grid-cols-1" : "grid-cols-2"}`}
+            >
+              <div>
+                <p className="text-[10px] font-black uppercase text-blue-600 ml-1">
+                  Sale Rate (₹) *
+                </p>
+                <input
+                  required
+                  type="number"
+                  value={itemForm.saleRate}
+                  onChange={(e) =>
+                    setItemForm({ ...itemForm, saleRate: e.target.value })
+                  }
+                  className="w-full border-2 border-blue-200 rounded-xl p-3 font-black text-blue-700 text-lg outline-none focus:bg-white"
+                />
+              </div>
+              {currentUser.role !== "staff" && (
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-500 ml-1">
+                    Pur. Rate (₹)
+                  </p>
+                  <input
+                    type="number"
+                    value={itemForm.purchaseRate}
+                    onChange={(e) =>
+                      setItemForm({ ...itemForm, purchaseRate: e.target.value })
+                    }
+                    className="w-full border rounded-xl p-3 font-black text-gray-600 outline-none focus:bg-white"
+                  />
+                </div>
+              )}
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-transform active:scale-95 text-xs"
+            >
+              Add Item To Bale List
+            </button>
+          </form>
+        )}
 
-      {baleItems.length > 0 && (
+      {baleItems.length > 0 && perBaleData.length === 0 && (
         <div className="bg-white rounded-[2rem] border overflow-hidden shadow-2xl animate-fade-in-down">
           <div className="bg-gray-900 text-white px-6 py-4 flex justify-between items-center">
             <h3 className="font-black uppercase tracking-widest text-xs">
@@ -6603,6 +6753,12 @@ function SettingsTab({
   setTransportTracking,
   tabNames,
   setTabNames,
+  fieldLabels,
+  setFieldLabels,
+  requiredFields,
+  setRequiredFields,
+  fieldOrder,
+  setFieldOrder,
 }: {
   users: AppUser[];
   setUsers: React.Dispatch<React.SetStateAction<AppUser[]>>;
@@ -6643,8 +6799,19 @@ function SettingsTab({
   >;
   tabNames: Record<string, string>;
   setTabNames: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  fieldLabels: Record<string, Record<string, string>>;
+  setFieldLabels: React.Dispatch<
+    React.SetStateAction<Record<string, Record<string, string>>>
+  >;
+  requiredFields: Record<string, Record<string, boolean>>;
+  setRequiredFields: React.Dispatch<
+    React.SetStateAction<Record<string, Record<string, boolean>>>
+  >;
+  fieldOrder: Record<string, string[]>;
+  setFieldOrder: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
 }) {
   const [activeSub, setActiveSub] = useState("users");
+  const [selectedFieldTab, setSelectedFieldTab] = useState("transit");
   const [newUser, setNewUser] = useState<AppUser>({
     username: "",
     password: "",
@@ -6726,6 +6893,7 @@ function SettingsTab({
             "godowns",
             "tracking",
             "tabnames",
+            "fieldlabels",
             "users",
             "columns",
             "data",
@@ -6747,11 +6915,13 @@ function SettingsTab({
                     ? "Tracking"
                     : sub === "tabnames"
                       ? "Tab Names"
-                      : sub === "users"
-                        ? "Logins"
-                        : sub === "columns"
-                          ? "Forms"
-                          : "System Data"}
+                      : sub === "fieldlabels"
+                        ? "Field Labels"
+                        : sub === "users"
+                          ? "Logins"
+                          : sub === "columns"
+                            ? "Forms"
+                            : "System Data"}
           </button>
         ))}
       </div>
@@ -7699,6 +7869,156 @@ function SettingsTab({
         </div>
       )}
 
+      {activeSub === "fieldlabels" &&
+        (() => {
+          const TAB_FIELDS: Record<string, { key: string; default: string }[]> =
+            {
+              transit: [
+                { key: "biltyNo", default: "Bilty No" },
+                { key: "transport", default: "Transport" },
+                { key: "supplier", default: "Supplier" },
+                { key: "itemCategory", default: "Item Category" },
+                { key: "itemInfo", default: "Item Info" },
+                { key: "packages", default: "Packages" },
+                { key: "date", default: "Bilty Date" },
+              ],
+              queue: [
+                { key: "biltyNo", default: "Bilty No" },
+                { key: "transport", default: "Transport" },
+                { key: "supplier", default: "Supplier" },
+                { key: "itemCategory", default: "Item Category" },
+                { key: "itemName", default: "Item Name" },
+                { key: "packages", default: "Total Packages" },
+                { key: "arrivalDate", default: "Arrival Date" },
+              ],
+              inward: [
+                { key: "biltyNo", default: "Bilty No" },
+                { key: "packages", default: "Packages" },
+                { key: "category", default: "Category" },
+                { key: "itemName", default: "Item Name" },
+                { key: "totalQty", default: "Total Qty in Bale" },
+                { key: "shopQty", default: "Shop Qty" },
+                { key: "saleRate", default: "Sale Rate" },
+                { key: "purchaseRate", default: "Purchase Rate" },
+              ],
+            };
+
+          const defaultOrder =
+            TAB_FIELDS[selectedFieldTab]?.map((f) => f.key) || [];
+          const currentOrder = fieldOrder[selectedFieldTab] || defaultOrder;
+          const fieldsByKey = Object.fromEntries(
+            (TAB_FIELDS[selectedFieldTab] || []).map((f) => [f.key, f]),
+          );
+          const orderedFields = currentOrder
+            .map((k) => fieldsByKey[k])
+            .filter(Boolean);
+
+          const moveField = (idx: number, dir: -1 | 1) => {
+            const order = [...currentOrder];
+            const newIdx = idx + dir;
+            if (newIdx < 0 || newIdx >= order.length) return;
+            [order[idx], order[newIdx]] = [order[newIdx], order[idx]];
+            setFieldOrder((prev) => ({ ...prev, [selectedFieldTab]: order }));
+          };
+
+          const tabLabels = fieldLabels[selectedFieldTab] || {};
+          const tabRequired = requiredFields[selectedFieldTab] || {};
+          return (
+            <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-2xl">
+              <h4 className="font-black text-xs uppercase tracking-widest text-blue-900 mb-6">
+                Field Labels & Required Fields
+              </h4>
+              <div className="flex gap-2 mb-6 flex-wrap">
+                {Object.keys(TAB_FIELDS).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setSelectedFieldTab(tab)}
+                    className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-colors ${selectedFieldTab === tab ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              <div className="space-y-3">
+                {orderedFields.map((f, idx) => (
+                  <div
+                    key={f.key}
+                    className="flex items-center gap-3 p-3 bg-gray-50 rounded-2xl"
+                  >
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveField(idx, -1)}
+                        className="p-1 rounded-lg bg-white border hover:bg-blue-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title="Move up"
+                      >
+                        <ChevronUp size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === orderedFields.length - 1}
+                        onClick={() => moveField(idx, 1)}
+                        className="p-1 rounded-lg bg-white border hover:bg-blue-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title="Move down"
+                      >
+                        <ChevronDown size={12} />
+                      </button>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[9px] font-black uppercase text-gray-400 mb-1">
+                        {f.default}
+                      </p>
+                      <input
+                        type="text"
+                        placeholder={f.default}
+                        value={tabLabels[f.key] || ""}
+                        onChange={(e) =>
+                          setFieldLabels((prev) => ({
+                            ...prev,
+                            [selectedFieldTab]: {
+                              ...(prev[selectedFieldTab] || {}),
+                              [f.key]: e.target.value,
+                            },
+                          }))
+                        }
+                        className="w-full border rounded-xl p-2.5 font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+                    <div className="flex flex-col items-center gap-1 shrink-0">
+                      <p className="text-[9px] font-black uppercase text-gray-400">
+                        Required
+                      </p>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!tabRequired[f.key]}
+                          onChange={(e) =>
+                            setRequiredFields((prev) => ({
+                              ...prev,
+                              [selectedFieldTab]: {
+                                ...(prev[selectedFieldTab] || {}),
+                                [f.key]: e.target.checked,
+                              },
+                            }))
+                          }
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 font-bold mt-4">
+                Label changes apply immediately. Use arrows to reorder fields.
+                Required fields block form submission if empty.
+              </p>
+            </div>
+          );
+        })()}
+
       {activeSub === "tabnames" && (
         <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-lg">
           <h4 className="font-black text-xs uppercase tracking-widest text-blue-900 mb-6">
@@ -8160,13 +8480,25 @@ function ItemHistoryPanel({
   if (!item) return null;
 
   const itemTxs = transactions
-    .filter(
-      (tx) =>
-        (!tx.businessId || tx.businessId === activeBusinessId) &&
-        (tx.sku === sku ||
-          (tx.itemName?.toLowerCase() === item.itemName?.toLowerCase() &&
-            (!tx.category || tx.category === item.category))),
-    )
+    .filter((tx) => {
+      if (!(!tx.businessId || tx.businessId === activeBusinessId)) return false;
+      if (tx.sku === sku) return true;
+      if (
+        tx.itemName?.toLowerCase() === item.itemName?.toLowerCase() &&
+        (!tx.category || tx.category === item.category)
+      )
+        return true;
+      // Also catch transactions where baleItemsList contains this item
+      if (
+        tx.baleItemsList?.some(
+          (bi: { itemName?: string; category?: string }) =>
+            bi.itemName?.toLowerCase() === item.itemName?.toLowerCase() &&
+            (!bi.category || bi.category === item.category),
+        )
+      )
+        return true;
+      return false;
+    })
     .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
   const dotColor = (type: string) => {
@@ -8750,7 +9082,7 @@ function InwardSavedTab({
             <div className="sticky top-0 bg-white border-b px-6 py-5 flex justify-between items-center rounded-t-[2.5rem]">
               <div>
                 <p className="text-[10px] font-black uppercase text-blue-600">
-                  Admin Edit
+                  Admin Edit — Inward Saved
                 </p>
                 <h3 className="font-black text-gray-900 text-lg">
                   {editingEntry.biltyNumber}
@@ -8767,43 +9099,253 @@ function InwardSavedTab({
             <div className="p-6 space-y-4">
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
                 <p className="text-[10px] font-black uppercase text-amber-700">
-                  Bilty number is locked (admin edit only)
+                  Bilty number is locked
                 </p>
                 <p className="font-black text-amber-900">
                   {editingEntry.biltyNumber}
                 </p>
               </div>
-              <div>
-                <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
-                  Transporter
-                </p>
-                <input
-                  type="text"
-                  value={editingEntry.transporter}
-                  onChange={(e) =>
-                    setEditingEntry({
-                      ...editingEntry,
-                      transporter: e.target.value,
-                    })
-                  }
-                  className="w-full border rounded-xl p-3 font-bold text-sm"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                    Transporter
+                  </p>
+                  <input
+                    type="text"
+                    value={editingEntry.transporter}
+                    onChange={(e) =>
+                      setEditingEntry({
+                        ...editingEntry,
+                        transporter: e.target.value,
+                      })
+                    }
+                    className="w-full border rounded-xl p-3 font-bold text-sm bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                    Supplier
+                  </p>
+                  <input
+                    type="text"
+                    value={editingEntry.supplier}
+                    onChange={(e) =>
+                      setEditingEntry({
+                        ...editingEntry,
+                        supplier: e.target.value,
+                      })
+                    }
+                    className="w-full border rounded-xl p-3 font-bold text-sm bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                    Saved By
+                  </p>
+                  <input
+                    type="text"
+                    value={editingEntry.savedBy}
+                    onChange={(e) =>
+                      setEditingEntry({
+                        ...editingEntry,
+                        savedBy: e.target.value,
+                      })
+                    }
+                    className="w-full border rounded-xl p-3 font-bold text-sm bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
+                    Date
+                  </p>
+                  <input
+                    type="date"
+                    value={
+                      editingEntry.savedAt
+                        ? editingEntry.savedAt.split("T")[0]
+                        : ""
+                    }
+                    onChange={(e) =>
+                      setEditingEntry({
+                        ...editingEntry,
+                        savedAt: e.target.value,
+                      })
+                    }
+                    className="w-full border rounded-xl p-3 font-bold text-sm bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase text-gray-500 mb-1">
-                  Supplier
+                <p className="text-[10px] font-black uppercase text-gray-500 mb-3 mt-2">
+                  Items
                 </p>
-                <input
-                  type="text"
-                  value={editingEntry.supplier}
-                  onChange={(e) =>
+                {editingEntry.items.map((itm, idx) => (
+                  <div
+                    key={`edit-itm-${itm.itemName || idx}-${itm.category || idx}`}
+                    className="border border-blue-100 rounded-2xl p-4 mb-3 bg-blue-50/40 space-y-3"
+                  >
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] font-black uppercase text-blue-700">
+                        Item {idx + 1}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingEntry({
+                            ...editingEntry,
+                            items: editingEntry.items.filter(
+                              (_, i) => i !== idx,
+                            ),
+                          })
+                        }
+                        className="text-red-400 hover:text-red-600 text-[10px] font-black uppercase"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Category
+                        </p>
+                        <input
+                          type="text"
+                          value={itm.category}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            upd[idx] = {
+                              ...upd[idx],
+                              category: e.target.value,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Item Name
+                        </p>
+                        <input
+                          type="text"
+                          value={itm.itemName}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            upd[idx] = {
+                              ...upd[idx],
+                              itemName: e.target.value,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Shop Qty
+                        </p>
+                        <input
+                          type="number"
+                          value={itm.shopQty}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            const sq = Number(e.target.value) || 0;
+                            upd[idx] = {
+                              ...upd[idx],
+                              shopQty: sq,
+                              qty: sq + upd[idx].godownQty,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Godown Qty
+                        </p>
+                        <input
+                          type="number"
+                          value={itm.godownQty}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            const gq = Number(e.target.value) || 0;
+                            upd[idx] = {
+                              ...upd[idx],
+                              godownQty: gq,
+                              qty: upd[idx].shopQty + gq,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Sale Rate (₹)
+                        </p>
+                        <input
+                          type="number"
+                          value={itm.saleRate}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            upd[idx] = {
+                              ...upd[idx],
+                              saleRate: Number(e.target.value) || 0,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-400 mb-1">
+                          Purchase Rate (₹)
+                        </p>
+                        <input
+                          type="number"
+                          value={itm.purchaseRate}
+                          onChange={(e) => {
+                            const upd = [...editingEntry.items];
+                            upd[idx] = {
+                              ...upd[idx],
+                              purchaseRate: Number(e.target.value) || 0,
+                            };
+                            setEditingEntry({ ...editingEntry, items: upd });
+                          }}
+                          className="w-full border rounded-xl p-3 font-bold text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] font-black text-blue-700">
+                      Total: {itm.shopQty + itm.godownQty} pcs
+                    </p>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
                     setEditingEntry({
                       ...editingEntry,
-                      supplier: e.target.value,
+                      items: [
+                        ...editingEntry.items,
+                        {
+                          category: "",
+                          itemName: "",
+                          qty: 0,
+                          shopQty: 0,
+                          godownQty: 0,
+                          saleRate: 0,
+                          purchaseRate: 0,
+                          attributes: {},
+                        },
+                      ],
                     })
                   }
-                  className="w-full border rounded-xl p-3 font-bold text-sm"
-                />
+                  className="w-full border-2 border-dashed border-blue-300 text-blue-600 font-black text-[10px] uppercase py-3 rounded-2xl hover:bg-blue-50"
+                >
+                  + Add Item
+                </button>
               </div>
               <div className="flex gap-3">
                 <button
@@ -8817,7 +9359,7 @@ function InwardSavedTab({
                     setEditingEntry(null);
                     showNotification("Entry updated", "success");
                   }}
-                  className="flex-1 bg-blue-600 text-white font-black py-3 rounded-2xl text-xs uppercase"
+                  className="flex-1 bg-blue-600 text-white font-black py-3 rounded-2xl text-xs uppercase shadow-lg"
                 >
                   Save Changes
                 </button>
@@ -8962,6 +9504,547 @@ function LoginScreen({
   );
 }
 
+function GodownStockTab({
+  inventory,
+  godowns,
+  activeBusinessId,
+}: {
+  inventory: Record<string, InventoryItem>;
+  godowns: string[];
+  activeBusinessId: string;
+}) {
+  const [selectedGodown, setSelectedGodown] = useState(godowns[0] || "");
+
+  const items = Object.values(inventory).filter(
+    (item) =>
+      (!item.businessId || item.businessId === activeBusinessId) &&
+      (item.godowns[selectedGodown] || 0) > 0,
+  );
+
+  const grouped = items.reduce<Record<string, InventoryItem[]>>((acc, item) => {
+    const cat = item.category || "Other";
+    if (!acc[cat]) acc[cat] = [];
+    acc[cat].push(item);
+    return acc;
+  }, {});
+
+  return (
+    <div className="space-y-6 animate-fade-in-down">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b pb-4">
+        <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase">
+          Godown Stock
+        </h2>
+        <select
+          value={selectedGodown}
+          onChange={(e) => setSelectedGodown(e.target.value)}
+          className="border rounded-xl p-2.5 font-bold text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+        >
+          {godowns.map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
+          ))}
+        </select>
+      </div>
+      {Object.keys(grouped).length === 0 ? (
+        <div className="text-center text-gray-400 font-bold py-16">
+          No stock in {selectedGodown}
+        </div>
+      ) : (
+        Object.entries(grouped).map(([cat, catItems]) => (
+          <div
+            key={cat}
+            className="bg-white rounded-3xl border shadow-sm overflow-hidden"
+          >
+            <div className="bg-blue-50 px-6 py-3 border-b">
+              <h3 className="font-black text-blue-800 text-xs uppercase tracking-widest">
+                {cat}
+              </h3>
+            </div>
+            <div className="divide-y">
+              {catItems.map((item) => {
+                const attrStr = Object.entries(item.attributes || {})
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(", ");
+                return (
+                  <div
+                    key={item.sku}
+                    className="px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-2"
+                  >
+                    <div>
+                      <p className="font-black text-gray-800">
+                        {item.itemName}
+                      </p>
+                      {attrStr && (
+                        <p className="text-xs text-gray-500 font-bold mt-0.5">
+                          {attrStr}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-6">
+                      <div className="text-right">
+                        <p className="text-[10px] font-black uppercase text-gray-400">
+                          Sale Rate
+                        </p>
+                        <p className="font-black text-gray-800">
+                          ₹{item.saleRate}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-black uppercase text-gray-400">
+                          Qty in Godown
+                        </p>
+                        <p className="font-black text-green-700 text-lg">
+                          {item.godowns[selectedGodown] || 0}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function AnalyticsTab({
+  transactions,
+  activeBusinessId,
+  godowns,
+}: {
+  transactions: Transaction[];
+  activeBusinessId: string;
+  godowns: string[];
+}) {
+  const [viewMode, setViewMode] = useState<"chart" | "leaderboard">(
+    "leaderboard",
+  );
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [movementType, setMovementType] = useState<
+    "inward" | "outward" | "both"
+  >("inward");
+  const [selectedGodown, setSelectedGodown] = useState("all");
+
+  // Always compute both inward and outward maps
+  const inwardFiltered = transactions.filter((t) => {
+    if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
+    if (t.type !== "INWARD") return false;
+    if (dateFrom && t.date < dateFrom) return false;
+    if (dateTo && t.date > dateTo) return false;
+    return true;
+  });
+
+  const outwardFiltered = transactions.filter((t) => {
+    if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
+    if (t.type !== "TRANSFER") return false;
+    if (dateFrom && t.date < dateFrom) return false;
+    if (dateTo && t.date > dateTo) return false;
+    if (selectedGodown !== "all" && t.fromLocation !== selectedGodown)
+      return false;
+    return true;
+  });
+
+  const buildInwardMap = () => {
+    const map: Record<
+      string,
+      {
+        itemName: string;
+        category: string;
+        subCategory: string;
+        inwardQty: number;
+        outwardQty: number;
+      }
+    > = {};
+    for (const t of inwardFiltered) {
+      if (t.baleItemsList) {
+        for (const item of t.baleItemsList) {
+          if (selectedGodown !== "all") {
+            const godownQty = item.godownQuants?.[selectedGodown] || 0;
+            if (godownQty <= 0) continue;
+          }
+          const sub = Object.entries(item.attributes || {})
+            .map(([k, v]) => `${k}:${v}`)
+            .join(", ");
+          const key = `${item.category}||${item.itemName}||${sub}`;
+          if (!map[key])
+            map[key] = {
+              itemName: item.itemName,
+              category: item.category,
+              subCategory: sub,
+              inwardQty: 0,
+              outwardQty: 0,
+            };
+          map[key].inwardQty += item.qty || 0;
+        }
+      }
+    }
+    return map;
+  };
+
+  const buildOutwardMap = () => {
+    const map: Record<
+      string,
+      {
+        itemName: string;
+        category: string;
+        subCategory: string;
+        inwardQty: number;
+        outwardQty: number;
+      }
+    > = {};
+    for (const t of outwardFiltered) {
+      if (t.itemName) {
+        const key = `${t.category || ""}||${t.itemName || ""}||`;
+        if (!map[key])
+          map[key] = {
+            itemName: t.itemName || "",
+            category: t.category || "",
+            subCategory: "",
+            inwardQty: 0,
+            outwardQty: 0,
+          };
+        map[key].outwardQty += t.itemsCount || 0;
+      }
+    }
+    return map;
+  };
+
+  const mergedMap = () => {
+    const inMap = buildInwardMap();
+    const outMap = buildOutwardMap();
+    const combined: Record<
+      string,
+      {
+        itemName: string;
+        category: string;
+        subCategory: string;
+        inwardQty: number;
+        outwardQty: number;
+      }
+    > = {};
+    for (const [k, v] of Object.entries(inMap)) {
+      combined[k] = { ...v };
+    }
+    for (const [k, v] of Object.entries(outMap)) {
+      if (combined[k]) {
+        combined[k].outwardQty = v.outwardQty;
+      } else {
+        combined[k] = { ...v };
+      }
+    }
+    return combined;
+  };
+
+  let itemMap: Record<
+    string,
+    {
+      itemName: string;
+      category: string;
+      subCategory: string;
+      inwardQty: number;
+      outwardQty: number;
+    }
+  > = {};
+  if (movementType === "inward") {
+    itemMap = buildInwardMap();
+  } else if (movementType === "outward") {
+    itemMap = buildOutwardMap();
+  } else {
+    itemMap = mergedMap();
+  }
+
+  const sortFn = (
+    a: { inwardQty: number; outwardQty: number },
+    b: { inwardQty: number; outwardQty: number },
+  ) => {
+    if (movementType === "inward") return b.inwardQty - a.inwardQty;
+    if (movementType === "outward") return b.outwardQty - a.outwardQty;
+    return b.inwardQty + b.outwardQty - (a.inwardQty + a.outwardQty);
+  };
+
+  const sorted = Object.values(itemMap).sort(sortFn);
+  const top20 = sorted.slice(0, 20);
+
+  // Group by category for display
+  const categoryGroups: Record<string, typeof sorted> = {};
+  for (const item of sorted) {
+    const cat = item.category || "Uncategorized";
+    if (!categoryGroups[cat]) categoryGroups[cat] = [];
+    categoryGroups[cat].push(item);
+  }
+  const categoryOrder = Object.keys(categoryGroups).sort((a, b) => {
+    const sumA = categoryGroups[a].reduce(
+      (s, i) => s + i.inwardQty + i.outwardQty,
+      0,
+    );
+    const sumB = categoryGroups[b].reduce(
+      (s, i) => s + i.inwardQty + i.outwardQty,
+      0,
+    );
+    return sumB - sumA;
+  });
+
+  return (
+    <div className="space-y-6 animate-fade-in-down">
+      <div className="flex flex-col gap-4 border-b pb-4">
+        <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase">
+          Analytics
+        </h2>
+        <div className="flex flex-wrap gap-3">
+          <div className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setMovementType("inward")}
+              className={`px-4 py-2 rounded-xl font-black text-xs uppercase ${movementType === "inward" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+            >
+              Inward
+            </button>
+            <button
+              type="button"
+              onClick={() => setMovementType("outward")}
+              className={`px-4 py-2 rounded-xl font-black text-xs uppercase ${movementType === "outward" ? "bg-purple-600 text-white" : "bg-gray-100 text-gray-600"}`}
+            >
+              Outward (to Shop)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMovementType("both")}
+              className={`px-4 py-2 rounded-xl font-black text-xs uppercase ${movementType === "both" ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600"}`}
+            >
+              Both
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setViewMode("leaderboard")}
+              className={`px-4 py-2 rounded-xl font-black text-xs uppercase ${viewMode === "leaderboard" ? "bg-green-600 text-white" : "bg-gray-100 text-gray-600"}`}
+            >
+              Leaderboard
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("chart")}
+              className={`px-4 py-2 rounded-xl font-black text-xs uppercase ${viewMode === "chart" ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-600"}`}
+            >
+              Chart
+            </button>
+          </div>
+          <select
+            value={selectedGodown}
+            onChange={(e) => setSelectedGodown(e.target.value)}
+            className="border rounded-xl p-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          >
+            <option value="all">All Godowns</option>
+            {godowns.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="border rounded-xl p-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="border rounded-xl p-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+
+      {sorted.length === 0 ? (
+        <div className="text-center text-gray-400 font-bold py-16">
+          No movement data for selected filters
+        </div>
+      ) : viewMode === "leaderboard" ? (
+        <div className="bg-white rounded-3xl border shadow-sm overflow-hidden">
+          <div className="overflow-y-auto" style={{ maxHeight: "55vh" }}>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b sticky top-0 z-10">
+                <tr>
+                  <th className="px-4 py-3 text-left text-[10px] font-black uppercase text-gray-500">
+                    #
+                  </th>
+                  <th className="px-4 py-3 text-left text-[10px] font-black uppercase text-gray-500">
+                    Category
+                  </th>
+                  <th className="px-4 py-3 text-left text-[10px] font-black uppercase text-gray-500">
+                    Item
+                  </th>
+                  <th className="px-4 py-3 text-left text-[10px] font-black uppercase text-gray-500">
+                    Sub-Cat
+                  </th>
+                  {(movementType === "inward" || movementType === "both") && (
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase text-blue-600">
+                      Inward
+                    </th>
+                  )}
+                  {(movementType === "outward" || movementType === "both") && (
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase text-red-500">
+                      Outward
+                    </th>
+                  )}
+                  {movementType === "both" && (
+                    <th className="px-4 py-3 text-right text-[10px] font-black uppercase text-gray-500">
+                      Total
+                    </th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {categoryOrder.map((cat) => {
+                  const catItems = categoryGroups[cat].sort(sortFn);
+                  const catInward = catItems.reduce(
+                    (s, i) => s + i.inwardQty,
+                    0,
+                  );
+                  const catOutward = catItems.reduce(
+                    (s, i) => s + i.outwardQty,
+                    0,
+                  );
+                  const _globalRank = sorted.findIndex(
+                    (i) => i === catItems[0],
+                  );
+                  return (
+                    <>
+                      <tr key={`cat-${cat}`} className="bg-blue-50">
+                        <td
+                          className="px-4 py-2 font-black text-blue-700 text-xs"
+                          colSpan={2}
+                        >
+                          📦 {cat}
+                        </td>
+                        <td
+                          className="px-4 py-2 text-xs text-gray-400 font-bold"
+                          colSpan={2}
+                        >
+                          {catItems.length} items
+                        </td>
+                        {(movementType === "inward" ||
+                          movementType === "both") && (
+                          <td className="px-4 py-2 text-right font-black text-blue-700 text-xs">
+                            {catInward}
+                          </td>
+                        )}
+                        {(movementType === "outward" ||
+                          movementType === "both") && (
+                          <td className="px-4 py-2 text-right font-black text-red-600 text-xs">
+                            {catOutward}
+                          </td>
+                        )}
+                        {movementType === "both" && (
+                          <td className="px-4 py-2 text-right font-black text-gray-700 text-xs">
+                            {catInward + catOutward}
+                          </td>
+                        )}
+                      </tr>
+                      {catItems.map((item, i) => {
+                        const rank = sorted.indexOf(item);
+                        return (
+                          <tr
+                            key={`${item.category}-${item.itemName}-${item.subCategory}-${i}`}
+                            className="hover:bg-gray-50"
+                          >
+                            <td className="px-4 py-3 font-black text-gray-400">
+                              #{rank + 1}
+                            </td>
+                            <td className="px-4 py-3 font-bold text-gray-600">
+                              {item.category}
+                            </td>
+                            <td className="px-4 py-3 font-black text-gray-800">
+                              {item.itemName}
+                            </td>
+                            <td className="px-4 py-3 text-xs font-bold text-gray-500">
+                              {item.subCategory || "-"}
+                            </td>
+                            {(movementType === "inward" ||
+                              movementType === "both") && (
+                              <td className="px-4 py-3 text-right font-black text-blue-700">
+                                {item.inwardQty}
+                              </td>
+                            )}
+                            {(movementType === "outward" ||
+                              movementType === "both") && (
+                              <td className="px-4 py-3 text-right font-black text-red-600">
+                                {item.outwardQty}
+                              </td>
+                            )}
+                            {movementType === "both" && (
+                              <td className="px-4 py-3 text-right font-black text-gray-700">
+                                {item.inwardQty + item.outwardQty}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-3xl border shadow-sm p-6 overflow-x-auto">
+          <div style={{ minWidth: `${Math.max(400, top20.length * 60)}px` }}>
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart
+                data={top20}
+                margin={{ top: 10, right: 10, left: 0, bottom: 80 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="itemName"
+                  angle={-45}
+                  textAnchor="end"
+                  tick={{ fontSize: 10, fontWeight: 700 }}
+                />
+                <YAxis tick={{ fontSize: 10, fontWeight: 700 }} />
+                <Tooltip />
+                {(movementType === "inward" || movementType === "both") && (
+                  <Bar
+                    dataKey="inwardQty"
+                    name="Inward"
+                    fill="#2563eb"
+                    radius={[4, 4, 0, 0]}
+                  />
+                )}
+                {(movementType === "outward" || movementType === "both") && (
+                  <Bar
+                    dataKey="outwardQty"
+                    name="Outward"
+                    fill="#dc2626"
+                    radius={[4, 4, 0, 0]}
+                  />
+                )}
+                {movementType !== "both" && (
+                  <Bar
+                    dataKey={
+                      movementType === "inward" ? "inwardQty" : "outwardQty"
+                    }
+                    name="Qty"
+                    fill={movementType === "inward" ? "#2563eb" : "#dc2626"}
+                    radius={[4, 4, 0, 0]}
+                  />
+                )}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ================= MAIN APP ================= */
 export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -9011,6 +10094,13 @@ export default function App() {
   const [transportTracking, setTransportTracking] = useState<
     Record<string, string>
   >({});
+  const [fieldLabels, setFieldLabels] = useState<
+    Record<string, Record<string, string>>
+  >({});
+  const [requiredFields, setRequiredFields] = useState<
+    Record<string, Record<string, boolean>>
+  >({});
+  const [fieldOrder, setFieldOrder] = useState<Record<string, string[]>>({});
   const [tabNames, setTabNames] = useState<Record<string, string>>({
     dashboard: "Inventory Hub",
     transit: "Transit Ledger",
@@ -9021,6 +10111,8 @@ export default function App() {
     sales: "Sales",
     history: "History Log",
     inwardSaved: "Inward Saved",
+    godownStock: "Godown Stock",
+    analytics: "Analytics",
     settings: "Admin Settings",
   });
   const [_inwardRecords, _setInwardRecords] = useState<InwardRecord[]>([]);
@@ -9116,6 +10208,9 @@ export default function App() {
       transactions,
       pendingParcels,
       transitGoods,
+      fieldLabels,
+      requiredFields,
+      fieldOrder,
       categories,
       godowns,
       biltyPrefixes,
@@ -9145,6 +10240,9 @@ export default function App() {
         if (data.transactions) setTransactions(data.transactions);
         if (data.pendingParcels) setPendingParcels(data.pendingParcels);
         if (data.transitGoods) setTransitGoods(data.transitGoods);
+        if (data.fieldLabels) setFieldLabels(data.fieldLabels);
+        if (data.requiredFields) setRequiredFields(data.requiredFields);
+        if (data.fieldOrder) setFieldOrder(data.fieldOrder);
         if (data.customColumns) setCustomColumns(data.customColumns);
         if (data.categories) setCategories(data.categories);
         if (data.users) setUsers(data.users);
@@ -9302,6 +10400,20 @@ export default function App() {
                 icon={CheckCircle}
                 label={tabNames.inwardSaved}
               />
+              <SidebarButton
+                active={activeTab === "godownStock"}
+                onClick={() => setActiveTab("godownStock")}
+                icon={Warehouse}
+                label={tabNames.godownStock}
+              />
+              {currentUser.role === "admin" && (
+                <SidebarButton
+                  active={activeTab === "analytics"}
+                  onClick={() => setActiveTab("analytics")}
+                  icon={BarChart2}
+                  label={tabNames.analytics}
+                />
+              )}
             </>
           )}
           {currentUser.role === "admin" && (
@@ -9370,6 +10482,7 @@ export default function App() {
             setActiveTabFromTransit={setActiveTab}
             pendingParcels={pendingParcels}
             transactions={transactions}
+            inwardSaved={inwardSaved}
           />
         )}
         {activeTab === "warehouse" && currentUser.role !== "supplier" && (
@@ -9394,6 +10507,7 @@ export default function App() {
               .filter((p) => !p.businessId || p.businessId === activeBusinessId)
               .map((p) => p.biltyNo)}
             transactions={transactions}
+            inwardSaved={inwardSaved}
           />
         )}
         {activeTab === "inward" && currentUser.role !== "supplier" && (
@@ -9481,6 +10595,20 @@ export default function App() {
             showNotification={showNotification}
           />
         )}
+        {activeTab === "godownStock" && currentUser.role !== "supplier" && (
+          <GodownStockTab
+            inventory={inventory}
+            godowns={godowns}
+            activeBusinessId={activeBusinessId}
+          />
+        )}
+        {activeTab === "analytics" && currentUser.role === "admin" && (
+          <AnalyticsTab
+            transactions={transactions}
+            activeBusinessId={activeBusinessId}
+            godowns={godowns}
+          />
+        )}
         {activeTab === "settings" && currentUser.role === "admin" && (
           <SettingsTab
             users={users}
@@ -9510,6 +10638,12 @@ export default function App() {
             setTransportTracking={setTransportTracking}
             tabNames={tabNames}
             setTabNames={setTabNames}
+            fieldLabels={fieldLabels}
+            setFieldLabels={setFieldLabels}
+            requiredFields={requiredFields}
+            setRequiredFields={setRequiredFields}
+            fieldOrder={fieldOrder}
+            setFieldOrder={setFieldOrder}
           />
         )}
 
@@ -9600,7 +10734,7 @@ export default function App() {
       </main>
 
       {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 w-full bg-white border-t flex justify-around items-center p-2 z-10">
+      <nav className="md:hidden fixed bottom-0 left-0 w-full bg-white border-t flex overflow-x-auto scrollbar-hide items-center p-2 z-10 gap-0.5">
         {currentUser.role !== "supplier" && (
           <NavButton
             active={activeTab === "dashboard"}
@@ -9655,6 +10789,20 @@ export default function App() {
               icon={CheckCircle}
               label="Saved"
             />
+            <NavButton
+              active={activeTab === "godownStock"}
+              onClick={() => setActiveTab("godownStock")}
+              icon={Warehouse}
+              label="Stock"
+            />
+            {currentUser.role === "admin" && (
+              <NavButton
+                active={activeTab === "analytics"}
+                onClick={() => setActiveTab("analytics")}
+                icon={BarChart2}
+                label="Analytics"
+              />
+            )}
           </>
         )}
         {currentUser.role === "admin" && (
