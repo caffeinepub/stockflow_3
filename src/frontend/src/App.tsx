@@ -337,12 +337,14 @@ function DashboardTab({
   activeBusinessId,
   transactions,
   onItemClick,
+  thresholdExcludedItems = [],
 }: {
   inventory: Record<string, InventoryItem>;
   minStockThreshold: number;
   activeBusinessId: string;
   transactions: Transaction[];
   onItemClick?: (sku: string) => void;
+  thresholdExcludedItems?: string[];
 }) {
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -370,6 +372,7 @@ function DashboardTab({
   }, {});
 
   const lowStock = filteredSkus.filter((sku) => {
+    if (thresholdExcludedItems.includes(sku)) return false;
     const item = inventory[sku];
     const threshold = item.minThreshold ?? minStockThreshold;
     return getTotalGodownStock(item) < threshold;
@@ -650,6 +653,7 @@ function TransitTab({
   pendingParcels,
   transactions,
   inwardSaved,
+  fieldLabels,
 }: {
   transitGoods: TransitRecord[];
   setTransitGoods: React.Dispatch<React.SetStateAction<TransitRecord[]>>;
@@ -669,8 +673,10 @@ function TransitTab({
   pendingParcels?: PendingParcel[];
   transactions?: Transaction[];
   inwardSaved?: InwardSavedEntry[];
+  fieldLabels?: Record<string, Record<string, string>>;
 }) {
-  const [showForm, setShowForm] = useState(false);
+  const _lbl = (key: string, def: string) => fieldLabels?.transit?.[key] || def;
+  const [showForm, setShowForm] = useState(true);
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
   const [form, setForm] = useState({
@@ -1219,6 +1225,19 @@ function TransitTab({
                   <span className="text-gray-700">{item.date || "-"}</span>
                 </p>
               </div>
+              {item.date && (
+                <div className="mt-3 flex items-center gap-2">
+                  <span
+                    className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest ${Math.ceil((Date.now() - new Date(item.date).getTime()) / 86400000) > 7 ? "bg-orange-100 text-orange-700" : "bg-indigo-50 text-indigo-700"}`}
+                  >
+                    🚚{" "}
+                    {Math.ceil(
+                      (Date.now() - new Date(item.date).getTime()) / 86400000,
+                    )}{" "}
+                    days in transit
+                  </span>
+                </div>
+              )}
             </div>
           ))
         )}
@@ -1248,6 +1267,7 @@ function WarehouseTab({
   clearMoveToQueueData,
   transactions,
   inwardSaved: _inwardSavedQueue,
+  fieldLabels,
 }: {
   pendingParcels: PendingParcel[];
   setPendingParcels: React.Dispatch<React.SetStateAction<PendingParcel[]>>;
@@ -1270,7 +1290,10 @@ function WarehouseTab({
   clearMoveToQueueData?: () => void;
   transactions?: Transaction[];
   inwardSaved?: InwardSavedEntry[];
+  fieldLabels?: Record<string, Record<string, string>>;
 }) {
+  const _lbl = (key: string, def: string) =>
+    fieldLabels?.warehouse?.[key] || def;
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
   const [form, setForm] = useState({
@@ -1528,6 +1551,46 @@ function WarehouseTab({
 
     if (queueBiltyList.some((b) => b.toLowerCase() === bNo.toLowerCase())) {
       return showNotification(`Bilty ${bNo} already exists in Queue!`, "error");
+    }
+    // Strict cross-tab uniqueness check (single-package path)
+    {
+      const baseBilty = bNo.replace(/X\d+\(\d+\)$/i, "").toLowerCase();
+      const inTransitCheck = (transitGoods || []).some(
+        (g) =>
+          (!g.businessId || g.businessId === activeBusinessId) &&
+          (g.biltyNo?.toLowerCase() === bNo.toLowerCase() ||
+            (g.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+              baseBilty),
+      );
+      const inInwardCheck = (transactions || []).some(
+        (t) =>
+          t.type === "INWARD" &&
+          (!t.businessId || t.businessId === activeBusinessId) &&
+          (t.biltyNo || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            baseBilty,
+      );
+      const inInwardSavedCheck = (_inwardSavedQueue || []).some(
+        (s) =>
+          (!s.businessId || s.businessId === activeBusinessId) &&
+          ((s.biltyNumber || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+            baseBilty ||
+            (s.baseNumber || "").toLowerCase() === baseBilty),
+      );
+      if (inTransitCheck)
+        return showNotification(
+          `Bilty ${bNo} already exists in Transit!`,
+          "error",
+        );
+      if (inInwardCheck)
+        return showNotification(
+          `Bilty ${bNo} has already been processed in Inward!`,
+          "error",
+        );
+      if (inInwardSavedCheck)
+        return showNotification(
+          `Bilty ${bNo} is already in Inward Saved!`,
+          "error",
+        );
     }
     setPendingParcels((prev) => [
       {
@@ -2118,6 +2181,8 @@ function InwardTab({
   setInventory,
   setConfirmDialog,
   setInwardSaved,
+  inwardSaved,
+  fieldLabels,
 }: {
   inventory: Record<string, InventoryItem>;
   categories: Category[];
@@ -2156,7 +2221,10 @@ function InwardTab({
     d: { message: string; onConfirm: () => void } | null,
   ) => void;
   setInwardSaved?: React.Dispatch<React.SetStateAction<InwardSavedEntry[]>>;
+  inwardSaved?: InwardSavedEntry[];
+  fieldLabels?: Record<string, Record<string, string>>;
 }) {
+  const _lbl = (key: string, def: string) => fieldLabels?.inward?.[key] || def;
   const [biltyPrefix, setBiltyPrefix] = useState(biltyPrefixes?.[0] || "0");
   const [biltyNumber, setBiltyNumber] = useState("");
   const [baleItems, setBaleItems] = useState<BaleItem[]>([]);
@@ -2321,6 +2389,22 @@ function InwardTab({
   const handleLookup = (pPrefix: string, pNumber: string) => {
     const bNo = pPrefix === "0" ? pNumber : `${pPrefix}-${pNumber}`;
     const searchStr = bNo.toLowerCase();
+    // Check if already in Inward Saved
+    const baseBiltyCheck = bNo.replace(/X\d+\(\d+\)$/i, "").toLowerCase();
+    const alreadySaved = (inwardSaved || []).some(
+      (s) =>
+        (!s.businessId || s.businessId === activeBusinessId) &&
+        ((s.biltyNumber || "").replace(/X\d+\(\d+\)$/i, "").toLowerCase() ===
+          baseBiltyCheck ||
+          (s.baseNumber || "").toLowerCase() === baseBiltyCheck),
+    );
+    if (alreadySaved) {
+      showNotification(
+        `Bilty ${bNo} is already fully saved in Inward Saved!`,
+        "error",
+      );
+      return;
+    }
     // Fix 4: Search by base bilty (strip postfix from entries) for Transit, Queue, and inwardHistory
     const transitMatch = transitGoods.find(
       (g) =>
@@ -2659,9 +2743,46 @@ ${names}`,
 
   return (
     <div className="space-y-6 animate-fade-in-down">
-      <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase flex items-center gap-2 border-b pb-4">
-        <PlusCircle className="text-green-600" /> Process Inward
-      </h2>
+      <div className="flex justify-between items-center border-b pb-4">
+        <h2 className="text-2xl font-black text-gray-800 tracking-tighter uppercase flex items-center gap-2">
+          <PlusCircle className="text-green-600" /> Process Inward
+        </h2>
+        <button
+          type="button"
+          data-ocid="inward.secondary_button"
+          onClick={() => {
+            setBiltyNumber("");
+            setBiltyPrefix(biltyPrefixes?.[0] || "0");
+            setInwardPackages("1");
+            setBiltyLocked(false);
+            setMatchedDetails(null);
+            setIsDirectEntry(false);
+            setDirectReference("");
+            setPerBaleData([]);
+            setPerBaleFormData({});
+            setActiveBaleIdx(0);
+            setBaleItems([]);
+            setItemForm({
+              category: "",
+              itemName: "",
+              attributes: {},
+              shopQty: "",
+              godownQuants: {},
+              saleRate: "",
+              purchaseRate: "",
+              customData: {},
+            });
+            setQueueBiltySearch("");
+            setTotalQty("");
+            setOpeningParcel(null);
+            showNotification("Form cleared", "info");
+          }}
+          className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
+          title="Clear form / New entry"
+        >
+          <RefreshCw size={16} />
+        </button>
+      </div>
 
       {/* Queue Bilty Dropdown */}
       {!isDirectEntry && (
@@ -2959,7 +3080,7 @@ ${names}`,
       </div>
 
       {/* Multi-Bale Section when packages > 1 */}
-      {Number(inwardPackages) > 1 && perBaleData.length > 0 && (
+      {Number(inwardPackages) >= 1 && perBaleData.length > 0 && (
         <div className="bg-white rounded-[2rem] border border-blue-100 shadow-xl overflow-hidden animate-fade-in-down">
           <div className="bg-blue-700 text-white px-6 py-4 flex items-center justify-between">
             <h3 className="font-black uppercase tracking-widest text-xs">
@@ -4192,7 +4313,8 @@ ${names}`,
 
       {showItemForm &&
         Number(inwardPackages) <= 1 &&
-        perBaleData.length === 0 && (
+        perBaleData.length === 0 &&
+        false && (
           <form
             onSubmit={addItemToBale}
             className="bg-white p-6 sm:p-8 rounded-[2.5rem] border shadow-xl space-y-6 animate-fade-in-down"
@@ -4312,7 +4434,7 @@ ${names}`,
             </div>
             {selectedCat && (
               <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                {selectedCat.fields.map((f) => (
+                {(selectedCat?.fields ?? []).map((f) => (
                   <div key={f.name}>
                     <p className="text-[10px] font-black uppercase text-blue-900 ml-1">
                       {f.name}
@@ -6759,6 +6881,8 @@ function SettingsTab({
   setRequiredFields,
   fieldOrder,
   setFieldOrder,
+  thresholdExcludedItems = [],
+  setThresholdExcludedItems,
 }: {
   users: AppUser[];
   setUsers: React.Dispatch<React.SetStateAction<AppUser[]>>;
@@ -6809,6 +6933,8 @@ function SettingsTab({
   >;
   fieldOrder: Record<string, string[]>;
   setFieldOrder: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  thresholdExcludedItems?: string[];
+  setThresholdExcludedItems?: React.Dispatch<React.SetStateAction<string[]>>;
 }) {
   const [activeSub, setActiveSub] = useState("users");
   const [selectedFieldTab, setSelectedFieldTab] = useState("transit");
@@ -6896,6 +7022,7 @@ function SettingsTab({
             "fieldlabels",
             "users",
             "columns",
+            "threshold",
             "data",
           ] as const
         ).map((sub) => (
@@ -6921,7 +7048,9 @@ function SettingsTab({
                           ? "Logins"
                           : sub === "columns"
                             ? "Forms"
-                            : "System Data"}
+                            : sub === "threshold"
+                              ? "Thresholds"
+                              : "System Data"}
           </button>
         ))}
       </div>
@@ -8047,6 +8176,77 @@ function SettingsTab({
         </div>
       )}
 
+      {activeSub === "threshold" && (
+        <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm max-w-2xl">
+          <h4 className="font-black text-xs uppercase tracking-widest text-blue-900 mb-2">
+            Threshold Exclusions
+          </h4>
+          <p className="text-[10px] text-gray-400 font-bold mb-6">
+            Items toggled here will be excluded from low stock alerts on the
+            dashboard.
+          </p>
+          {Object.keys(inventory).filter(
+            (sku) =>
+              !inventory[sku].businessId ||
+              inventory[sku].businessId === activeBusinessId,
+          ).length === 0 ? (
+            <p className="text-gray-400 font-bold text-sm text-center py-8">
+              No inventory items yet.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-2">
+              {Object.keys(inventory)
+                .filter(
+                  (sku) =>
+                    !inventory[sku].businessId ||
+                    inventory[sku].businessId === activeBusinessId,
+                )
+                .map((sku) => {
+                  const item = inventory[sku];
+                  const excluded = (thresholdExcludedItems || []).includes(sku);
+                  return (
+                    <div
+                      key={sku}
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl"
+                    >
+                      <div>
+                        <p className="font-black text-sm text-gray-800">
+                          {item.itemName}
+                        </p>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase">
+                          {item.category}
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer gap-2">
+                        <span
+                          className={`text-[10px] font-black uppercase ${excluded ? "text-red-500" : "text-green-600"}`}
+                        >
+                          {excluded ? "Excluded" : "Alerting"}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={excluded}
+                          onChange={(e) => {
+                            if (setThresholdExcludedItems) {
+                              setThresholdExcludedItems((prev) =>
+                                e.target.checked
+                                  ? [...prev, sku]
+                                  : prev.filter((s) => s !== sku),
+                              );
+                            }
+                          }}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-500 relative" />
+                      </label>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      )}
+
       {activeSub === "data" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white p-10 rounded-[3rem] border shadow-sm flex flex-col items-center text-center gap-4">
@@ -8064,9 +8264,10 @@ function SettingsTab({
             <button
               type="button"
               onClick={exportDatabase}
-              className="w-full bg-green-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs shadow-lg mt-4"
+              data-ocid="admin.primary_button"
+              className="w-full bg-green-600 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm shadow-xl mt-4 hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
             >
-              Download Data
+              <Download size={18} /> Download Backup Now
             </button>
           </div>
           <div className="bg-white p-10 rounded-[3rem] border shadow-sm flex flex-col items-center text-center gap-4">
@@ -9448,6 +9649,7 @@ function LoginScreen({
         u.password === password,
     );
     if (user) {
+      localStorage.setItem("stockflow_user", JSON.stringify(user));
       onLogin(user);
       showNotification(`Welcome back, ${user.username}!`, "success");
     } else {
@@ -9767,7 +9969,7 @@ function AnalyticsTab({
   };
 
   const sorted = Object.values(itemMap).sort(sortFn);
-  const top20 = sorted.slice(0, 20);
+  const _top20 = sorted.slice(0, 20);
 
   // Group by category for display
   const categoryGroups: Record<string, typeof sorted> = {};
@@ -9995,50 +10197,107 @@ function AnalyticsTab({
         </div>
       ) : (
         <div className="bg-white rounded-3xl border shadow-sm p-6 overflow-x-auto">
-          <div style={{ minWidth: `${Math.max(400, top20.length * 60)}px` }}>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart
-                data={top20}
-                margin={{ top: 10, right: 10, left: 0, bottom: 80 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="itemName"
-                  angle={-45}
-                  textAnchor="end"
-                  tick={{ fontSize: 10, fontWeight: 700 }}
-                />
-                <YAxis tick={{ fontSize: 10, fontWeight: 700 }} />
-                <Tooltip />
-                {(movementType === "inward" || movementType === "both") && (
-                  <Bar
-                    dataKey="inwardQty"
-                    name="Inward"
-                    fill="#2563eb"
-                    radius={[4, 4, 0, 0]}
-                  />
+          {(() => {
+            const ITEM_COLORS = [
+              "#2563eb",
+              "#dc2626",
+              "#16a34a",
+              "#d97706",
+              "#7c3aed",
+              "#0891b2",
+              "#db2777",
+              "#65a30d",
+              "#ea580c",
+              "#0f766e",
+              "#4f46e5",
+              "#be185d",
+              "#15803d",
+              "#b45309",
+              "#1d4ed8",
+            ];
+            // Build per-category chart data: one bar per category, colored segments per item
+            const chartCats = categoryOrder.map((cat) => {
+              const catItems = categoryGroups[cat];
+              const row: Record<string, string | number> = { category: cat };
+              for (const item of catItems) {
+                const key = `${item.itemName}||${item.subCategory}`;
+                const qty =
+                  movementType === "inward"
+                    ? item.inwardQty
+                    : movementType === "outward"
+                      ? item.outwardQty
+                      : item.inwardQty + item.outwardQty;
+                row[key] = (Number(row[key]) || 0) + qty;
+              }
+              return row;
+            });
+            // Collect all unique item keys across all categories for legend
+            const allItemKeys: string[] = [];
+            for (const cat of categoryOrder) {
+              for (const item of categoryGroups[cat]) {
+                const key = `${item.itemName}||${item.subCategory}`;
+                if (!allItemKeys.includes(key)) allItemKeys.push(key);
+              }
+            }
+            return (
+              <>
+                <div
+                  style={{
+                    minWidth: `${Math.max(400, chartCats.length * 80)}px`,
+                  }}
+                >
+                  <ResponsiveContainer width="100%" height={400}>
+                    <BarChart
+                      data={chartCats}
+                      margin={{ top: 10, right: 10, left: 0, bottom: 80 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="category"
+                        angle={-45}
+                        textAnchor="end"
+                        tick={{ fontSize: 10, fontWeight: 700 }}
+                      />
+                      <YAxis tick={{ fontSize: 10, fontWeight: 700 }} />
+                      <Tooltip />
+                      {allItemKeys.map((key, idx) => (
+                        <Bar
+                          key={key}
+                          dataKey={key}
+                          name={key.split("||")[0]}
+                          stackId="a"
+                          fill={ITEM_COLORS[idx % ITEM_COLORS.length]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                {allItemKeys.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {allItemKeys.map((key, idx) => {
+                      const [itemName, sub] = key.split("||");
+                      return (
+                        <div
+                          key={key}
+                          className="flex items-center gap-1.5 text-[10px] font-bold text-gray-600"
+                        >
+                          <div
+                            className="w-3 h-3 rounded-sm shrink-0"
+                            style={{
+                              backgroundColor:
+                                ITEM_COLORS[idx % ITEM_COLORS.length],
+                            }}
+                          />
+                          {itemName}
+                          {sub ? ` (${sub})` : ""}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-                {(movementType === "outward" || movementType === "both") && (
-                  <Bar
-                    dataKey="outwardQty"
-                    name="Outward"
-                    fill="#dc2626"
-                    radius={[4, 4, 0, 0]}
-                  />
-                )}
-                {movementType !== "both" && (
-                  <Bar
-                    dataKey={
-                      movementType === "inward" ? "inwardQty" : "outwardQty"
-                    }
-                    name="Qty"
-                    fill={movementType === "inward" ? "#2563eb" : "#dc2626"}
-                    radius={[4, 4, 0, 0]}
-                  />
-                )}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -10087,7 +10346,14 @@ export default function App() {
     { username: "staff", password: "password", role: "staff" },
     { username: "supplier", password: "password", role: "supplier" },
   ]);
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    try {
+      const saved = localStorage.getItem("stockflow_user");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [openingParcel, setOpeningParcel] = useState<PendingParcel | null>(
     null,
   );
@@ -10117,6 +10383,9 @@ export default function App() {
   });
   const [_inwardRecords, _setInwardRecords] = useState<InwardRecord[]>([]);
   const [inwardSaved, setInwardSaved] = useState<InwardSavedEntry[]>([]);
+  const [thresholdExcludedItems, setThresholdExcludedItems] = useState<
+    string[]
+  >([]);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(
     null,
   );
@@ -10142,6 +10411,24 @@ export default function App() {
     if (currentUser?.role === "supplier" && activeTab !== "transit")
       setActiveTab("transit");
   }, [currentUser, activeTab]);
+
+  // Morning backup reminder for admin
+  useEffect(() => {
+    if (currentUser?.role === "admin") {
+      const today = new Date().toDateString();
+      const lastReminder = localStorage.getItem("stockflow_backup_reminder");
+      if (lastReminder !== today) {
+        localStorage.setItem("stockflow_backup_reminder", today);
+        setTimeout(() => {
+          setNotification({
+            message: "Reminder: Please download a data backup today!",
+            type: "warning",
+          });
+          setTimeout(() => setNotification(null), 6000);
+        }, 1500);
+      }
+    }
+  }, [currentUser]);
 
   const showNotification = (message: string, type = "success") => {
     setNotification({ message, type });
@@ -10300,7 +10587,10 @@ export default function App() {
         </div>
         <button
           type="button"
-          onClick={() => setCurrentUser(null)}
+          onClick={() => {
+            localStorage.removeItem("stockflow_user");
+            setCurrentUser(null);
+          }}
           className="text-gray-400 hover:text-red-500 transition-colors"
         >
           <LogOut size={20} />
@@ -10441,7 +10731,10 @@ export default function App() {
           </div>
           <button
             type="button"
-            onClick={() => setCurrentUser(null)}
+            onClick={() => {
+              localStorage.removeItem("stockflow_user");
+              setCurrentUser(null);
+            }}
             className="w-full bg-white border border-red-100 text-red-500 font-bold py-2 rounded-xl text-[10px] uppercase tracking-widest hover:bg-red-50 transition-colors"
           >
             Sign Out
@@ -10463,6 +10756,7 @@ export default function App() {
             activeBusinessId={activeBusinessId}
             transactions={transactions}
             onItemClick={(sku) => setSelectedHistoryItem(sku)}
+            thresholdExcludedItems={thresholdExcludedItems}
           />
         )}
         {activeTab === "transit" && (
@@ -10483,6 +10777,7 @@ export default function App() {
             pendingParcels={pendingParcels}
             transactions={transactions}
             inwardSaved={inwardSaved}
+            fieldLabels={fieldLabels}
           />
         )}
         {activeTab === "warehouse" && currentUser.role !== "supplier" && (
@@ -10508,6 +10803,7 @@ export default function App() {
               .map((p) => p.biltyNo)}
             transactions={transactions}
             inwardSaved={inwardSaved}
+            fieldLabels={fieldLabels}
           />
         )}
         {activeTab === "inward" && currentUser.role !== "supplier" && (
@@ -10533,6 +10829,8 @@ export default function App() {
             setInventory={setInventory}
             setConfirmDialog={setConfirmDialog}
             setInwardSaved={setInwardSaved}
+            inwardSaved={inwardSaved}
+            fieldLabels={fieldLabels}
           />
         )}
         {activeTab === "opening" && currentUser.role === "admin" && (
@@ -10644,6 +10942,8 @@ export default function App() {
             setRequiredFields={setRequiredFields}
             fieldOrder={fieldOrder}
             setFieldOrder={setFieldOrder}
+            thresholdExcludedItems={thresholdExcludedItems}
+            setThresholdExcludedItems={setThresholdExcludedItems}
           />
         )}
 
