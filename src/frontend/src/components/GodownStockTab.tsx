@@ -108,6 +108,4 @@ function GodownStockTab({
   );
 }
 
-/* ================= SALES RECORD TAB ================= */
-
 export { GodownStockTab };

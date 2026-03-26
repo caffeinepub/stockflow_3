@@ -51,7 +51,6 @@ function NavButton({
   );
 }
 
-/* ================= LOGIN SCREEN ================= */
 function LoginScreen({
   users,
   onLogin,

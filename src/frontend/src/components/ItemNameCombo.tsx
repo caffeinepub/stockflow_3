@@ -23,7 +23,6 @@ function ItemNameCombo({
     setInputVal(value);
   }, [value]);
 
-  // Build rich suggestion list with subcategory+price per inventory item
   const _inventoryItems = Object.values(inventory).filter(
     (i) =>
       (!category || i.category === category) &&
@@ -31,7 +30,6 @@ function ItemNameCombo({
       (!inputVal || i.itemName.toLowerCase().includes(inputVal.toLowerCase())),
   );
 
-  // Deduplicate by sku for display
   const suggestions = _inventoryItems;
 
   return (
@@ -59,9 +57,6 @@ function ItemNameCombo({
             const attrStr = Object.values(inv.attributes || {})
               .filter(Boolean)
               .join(" -- ");
-            const _label = attrStr
-              ? `${inv.itemName} -- ${attrStr} -- ₹${inv.saleRate}`
-              : `${inv.itemName} -- ₹${inv.saleRate}`;
             return (
               <button
                 type="button"
@@ -87,8 +82,6 @@ function ItemNameCombo({
     </div>
   );
 }
-
-/* ================= INWARD TAB ================= */
 
 function ItemNameComboOpening({
   categories: _categories,
@@ -190,7 +183,5 @@ function ItemNameComboOpening({
     </div>
   );
 }
-
-/* ================= SALES TAB ================= */
 
 export { ItemNameCombo, ItemNameComboOpening };

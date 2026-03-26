@@ -70,9 +70,9 @@ export default function App() {
   } | null>(null);
 
   const [businesses, setBusinesses] = useState<Business[]>([
-    { id: "default", name: "StockFlow Default" },
+    { id: "b1", name: "Demo Business" },
   ]);
-  const [activeBusinessId, setActiveBusinessId] = useState("default");
+  const [activeBusinessId, setActiveBusinessId] = useState("b1");
   const [inventory, setInventory] = useState<Record<string, InventoryItem>>({});
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [pendingParcels, setPendingParcels] = useState<PendingParcel[]>([]);

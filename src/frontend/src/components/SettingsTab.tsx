@@ -1374,58 +1374,60 @@ function SettingsTab({
               <PlusCircle size={18} />
             </button>
           </div>
-          Object.keys(transportTracking).length === 0 ? (
-          <p className="text-gray-400 font-bold text-xs text-center py-8">
-            No tracking URLs configured yet.
-          </p>
+          {Object.keys(transportTracking).length === 0 ? (
+            <p className="text-gray-400 font-bold text-xs text-center py-8">
+              No tracking URLs configured yet.
+            </p>
           ) : (
-          <div className="space-y-3">
-            {Object.entries(transportTracking).map(([transport, url]) => (
-              <div
-                key={transport}
-                className="flex justify-between items-center bg-gray-50 border p-4 rounded-2xl font-bold text-sm"
-              >
-                <div>
-                  <p className="font-black">{transport}</p>
-                  <p className="text-[10px] text-blue-600 font-bold truncate max-w-xs">
-                    {url}
-                  </p>
+            <div className="space-y-3">
+              {Object.entries(transportTracking).map(([transport, url]) => (
+                <div
+                  key={transport}
+                  className="flex justify-between items-center bg-gray-50 border p-4 rounded-2xl font-bold text-sm"
+                >
+                  <div>
+                    <p className="font-black">{transport}</p>
+                    <p className="text-[10px] text-blue-600 font-bold truncate max-w-xs">
+                      {url}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newUrl = prompt("Edit URL:", url);
+                        if (newUrl)
+                          setTransportTracking((prev) => ({
+                            ...prev,
+                            [transport]: newUrl.trim(),
+                          }));
+                      }}
+                      className="text-blue-500 bg-white p-2 rounded-lg shadow-sm"
+                    >
+                      <Edit size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (
+                          window.confirm(`Remove tracking for ${transport}?`)
+                        ) {
+                          setTransportTracking((prev) => {
+                            const c = { ...prev };
+                            delete c[transport];
+                            return c;
+                          });
+                        }
+                      }}
+                      className="text-red-400 bg-white p-2 rounded-lg shadow-sm"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newUrl = prompt("Edit URL:", url);
-                      if (newUrl)
-                        setTransportTracking((prev) => ({
-                          ...prev,
-                          [transport]: newUrl.trim(),
-                        }));
-                    }}
-                    className="text-blue-500 bg-white p-2 rounded-lg shadow-sm"
-                  >
-                    <Edit size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Remove tracking for ${transport}?`)) {
-                        setTransportTracking((prev) => {
-                          const c = { ...prev };
-                          delete c[transport];
-                          return c;
-                        });
-                      }
-                    }}
-                    className="text-red-400 bg-white p-2 rounded-lg shadow-sm"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-          )
+              ))}
+            </div>
+          )}
         </div>
       )}
 

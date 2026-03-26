@@ -33,7 +33,7 @@ function AnalyticsTab({
   // Always compute both inward and outward maps
   const inwardFiltered = transactions.filter((t) => {
     if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
-    if (t.type !== "INWARD") return false;
+    if (t.type !== "INWARD" && t.type !== "DIRECT_STOCK") return false;
     if (dateFrom && t.date < dateFrom) return false;
     if (dateTo && t.date > dateTo) return false;
     return true;
@@ -41,7 +41,12 @@ function AnalyticsTab({
 
   const outwardFiltered = transactions.filter((t) => {
     if (!(!t.businessId || t.businessId === activeBusinessId)) return false;
-    if (t.type !== "TRANSFER" && t.type !== "transfer" && t.type !== "DELIVERY")
+    if (
+      t.type !== "TRANSFER" &&
+      t.type !== "transfer" &&
+      t.type !== "DELIVERY" &&
+      t.type !== "SALE"
+    )
       return false;
     if (dateFrom && t.date < dateFrom) return false;
     if (dateTo && t.date > dateTo) return false;

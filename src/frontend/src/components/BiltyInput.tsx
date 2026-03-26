@@ -103,6 +103,4 @@ function DynamicFields({
   );
 }
 
-/* ================= DASHBOARD TAB ================= */
-
 export { BiltyInput, DynamicFields };
